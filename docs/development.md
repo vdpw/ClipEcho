@@ -76,6 +76,13 @@ cargo test --manifest-path src-tauri/Cargo.toml
 pnpm desktop:build
 ```
 
+CI runs when a pull request is opened, reopened, or updated, and can also be
+started manually with `workflow_dispatch`. Branch pushes (including PR merges
+into `dev` or `main`) do not start another CI run. Direct pushes without a PR
+therefore need a manual run when verification is wanted. A newer run for the
+same PR or manually selected ref cancels the previous unfinished run. Tag-based
+release verification remains independent.
+
 The normal CI matrix runs frontend checks/build, the security guardrail, Rust
 format/check/test, and dependency resolution natively on both `macos-15`
 (Apple Silicon) and `macos-15-intel` (Intel). This catches architecture-specific
