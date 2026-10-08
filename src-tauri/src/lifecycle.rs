@@ -9,6 +9,7 @@ pub(crate) enum LifecycleError {
     WindowHideFailed,
     WindowUnminimizeFailed,
     WindowFocusFailed,
+    ActivationPolicyFailed,
     AutostartReadFailed,
     AutostartWriteFailed,
     AutostartVerificationFailed,
@@ -23,6 +24,7 @@ impl LifecycleError {
             Self::WindowHideFailed => "MAIN_WINDOW_HIDE_FAILED",
             Self::WindowUnminimizeFailed => "MAIN_WINDOW_UNMINIMIZE_FAILED",
             Self::WindowFocusFailed => "MAIN_WINDOW_FOCUS_FAILED",
+            Self::ActivationPolicyFailed => "ACTIVATION_POLICY_FAILED",
             Self::AutostartReadFailed => "AUTOSTART_READ_FAILED",
             Self::AutostartWriteFailed => "AUTOSTART_WRITE_FAILED",
             Self::AutostartVerificationFailed => "AUTOSTART_VERIFICATION_FAILED",
@@ -31,6 +33,7 @@ impl LifecycleError {
 }
 
 trait MainWindowActions {
+    fn set_foreground(&self, foreground: bool) -> Result<(), ()>;
     fn show(&self) -> Result<(), ()>;
     fn hide(&self) -> Result<(), ()>;
     fn unminimize(&self) -> Result<(), ()>;
@@ -38,6 +41,20 @@ trait MainWindowActions {
 }
 
 impl<R: Runtime> MainWindowActions for WebviewWindow<R> {
+    fn set_foreground(&self, foreground: bool) -> Result<(), ()> {
+        #[cfg(target_os = "macos")]
+        self.app_handle()
+            .set_activation_policy(if foreground {
+                tauri::ActivationPolicy::Regular
+            } else {
+                tauri::ActivationPolicy::Accessory
+            })
+            .map_err(|_| ())?;
+        #[cfg(not(target_os = "macos"))]
+        let _ = foreground;
+        Ok(())
+    }
+
     fn show(&self) -> Result<(), ()> {
         WebviewWindow::show(self).map_err(|_| ())
     }
@@ -56,9 +73,12 @@ impl<R: Runtime> MainWindowActions for WebviewWindow<R> {
 }
 
 fn activate_window(window: &impl MainWindowActions) -> Result<(), LifecycleError> {
-    let mut first_error = None;
+    let mut first_error = window
+        .set_foreground(true)
+        .err()
+        .map(|_| LifecycleError::ActivationPolicyFailed);
 
-    if window.show().is_err() {
+    if window.show().is_err() && first_error.is_none() {
         first_error = Some(LifecycleError::WindowShowFailed);
     }
     if window.unminimize().is_err() && first_error.is_none() {
@@ -69,6 +89,23 @@ fn activate_window(window: &impl MainWindowActions) -> Result<(), LifecycleError
     }
 
     first_error.map_or(Ok(()), Err)
+}
+
+fn hide_window(window: &impl MainWindowActions) -> Result<(), LifecycleError> {
+    // Keep the Dock entry if hiding fails, so the visible window stays reachable.
+    window
+        .hide()
+        .map_err(|_| LifecycleError::WindowHideFailed)?;
+    window
+        .set_foreground(false)
+        .map_err(|_| LifecycleError::ActivationPolicyFailed)
+}
+
+pub(crate) fn hide_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), LifecycleError> {
+    let window = app
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .ok_or(LifecycleError::MainWindowUnavailable)?;
+    hide_window(&window)
 }
 
 pub(crate) fn activate_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), LifecycleError> {
@@ -118,12 +155,8 @@ fn apply_window_visibility(
     visibility: InitialWindowVisibility,
 ) -> Result<(), LifecycleError> {
     match visibility {
-        InitialWindowVisibility::Visible => {
-            window.show().map_err(|_| LifecycleError::WindowShowFailed)
-        }
-        InitialWindowVisibility::Hidden => {
-            window.hide().map_err(|_| LifecycleError::WindowHideFailed)
-        }
+        InitialWindowVisibility::Visible => activate_window(window),
+        InitialWindowVisibility::Hidden => hide_window(window),
     }
 }
 
@@ -184,9 +217,19 @@ mod tests {
         fail_hide: bool,
         fail_unminimize: bool,
         fail_focus: bool,
+        fail_policy: bool,
     }
 
     impl MainWindowActions for FakeWindow {
+        fn set_foreground(&self, foreground: bool) -> Result<(), ()> {
+            self.calls.borrow_mut().push(if foreground {
+                "foreground"
+            } else {
+                "accessory"
+            });
+            (!self.fail_policy).then_some(()).ok_or(())
+        }
+
         fn show(&self) -> Result<(), ()> {
             self.calls.borrow_mut().push("show");
             (!self.fail_show).then_some(()).ok_or(())
@@ -215,7 +258,7 @@ mod tests {
         assert_eq!(activate_window(&window), Ok(()));
         assert_eq!(
             window.calls.borrow().as_slice(),
-            ["show", "unminimize", "focus"]
+            ["foreground", "show", "unminimize", "focus"]
         );
     }
 
@@ -233,7 +276,7 @@ mod tests {
         );
         assert_eq!(
             window.calls.borrow().as_slice(),
-            ["show", "unminimize", "focus"]
+            ["foreground", "show", "unminimize", "focus"]
         );
     }
 
@@ -244,7 +287,7 @@ mod tests {
         assert_eq!(activate_window_on_reopen(&window, false), Ok(()));
         assert_eq!(
             window.calls.borrow().as_slice(),
-            ["show", "unminimize", "focus"]
+            ["foreground", "show", "unminimize", "focus"]
         );
     }
 
@@ -257,6 +300,55 @@ mod tests {
     }
 
     #[test]
+    fn close_then_reopen_restores_foreground_before_focusing() {
+        let window = FakeWindow::default();
+        assert_eq!(hide_window(&window), Ok(()));
+        assert_eq!(activate_window_on_reopen(&window, false), Ok(()));
+        assert_eq!(
+            window.calls.borrow().as_slice(),
+            [
+                "hide",
+                "accessory",
+                "foreground",
+                "show",
+                "unminimize",
+                "focus"
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_hide_keeps_foreground_policy() {
+        let window = FakeWindow {
+            fail_hide: true,
+            ..Default::default()
+        };
+        assert_eq!(hide_window(&window), Err(LifecycleError::WindowHideFailed));
+        assert_eq!(window.calls.borrow().as_slice(), ["hide"]);
+    }
+
+    #[test]
+    fn failed_policy_is_reported_but_does_not_block_window_recovery() {
+        let window = FakeWindow {
+            fail_policy: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hide_window(&window),
+            Err(LifecycleError::ActivationPolicyFailed)
+        );
+        window.calls.borrow_mut().clear();
+        assert_eq!(
+            activate_window(&window),
+            Err(LifecycleError::ActivationPolicyFailed)
+        );
+        assert_eq!(
+            window.calls.borrow().as_slice(),
+            ["foreground", "show", "unminimize", "focus"]
+        );
+    }
+
+    #[test]
     fn login_launch_is_hidden_and_manual_launch_is_visible() {
         let login_window = FakeWindow::default();
         let manual_window = FakeWindow::default();
@@ -266,8 +358,14 @@ mod tests {
         apply_window_visibility(&manual_window, initial_window_visibility(false))
             .expect("manual visibility should apply");
 
-        assert_eq!(login_window.calls.borrow().as_slice(), ["hide"]);
-        assert_eq!(manual_window.calls.borrow().as_slice(), ["show"]);
+        assert_eq!(
+            login_window.calls.borrow().as_slice(),
+            ["hide", "accessory"]
+        );
+        assert_eq!(
+            manual_window.calls.borrow().as_slice(),
+            ["foreground", "show", "unminimize", "focus"]
+        );
     }
 
     struct FakeAutostart {

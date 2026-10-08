@@ -1263,7 +1263,9 @@ pub fn run(startup_options: StartupOptions) -> Result<(), String> {
 
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                if let Err(_error) = lifecycle::hide_main_window(window.app_handle()) {
+                    debug_error!("[clipecho] close-to-menu-bar failed: {}", _error.code());
+                }
             }
         })
         .setup(move |app| {

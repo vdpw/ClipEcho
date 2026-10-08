@@ -58,17 +58,21 @@ Important modules:
 - the internal `--copy-stack-autostart` flag.
 
 `lib.rs` registers the single-instance plugin first. A duplicate process calls
-only the existing-process callback, which shows, unminimizes, and focuses the
-main window. It does not create another database connection, tray, listener, or
-consumer. On macOS, clicking the Dock icon after closing the main window handles
-the application reopen event through the same show, unminimize, and focus
-sequence.
+only the existing-process callback, which restores the macOS Regular activation
+policy (Dock entry), then shows, unminimizes, and focuses the main window. It does not create another database connection, tray, listener, or
+consumer. Closing the main window hides it and switches macOS to Accessory
+activation policy, removing its running Dock entry while the tray and clipboard
+listener continue. Opening History, Search, or Settings from the tray, or
+reopening the application from Finder or a pinned Dock shortcut, restores the
+Regular policy and uses the same show, unminimize, and focus sequence. Menu-bar
+visibility continues to honor its setting; when disabled, relaunching the app
+remains a way to recover the window. Explicit Quit still exits the process.
 
 First-instance setup:
 
 1. registers autostart without enabling it;
-2. shows the main window for a manual launch or hides it for an autostart
-   launch;
+2. shows the main window with the regular Dock entry for a manual launch, or
+   hides both the window and running Dock entry for an autostart launch;
 3. prepares the private database path and opens SQLite;
 4. applies required schema/classifier migrations and retention;
 5. starts and seeds the optional history-mirror worker;

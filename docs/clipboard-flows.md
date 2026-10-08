@@ -193,8 +193,12 @@ A manual first launch shows the main window. An autostart launch contains the
 internal `--copy-stack-autostart` flag and keeps the main window hidden while
 the tray and listener run. A duplicate launch never reaches database/listener
 setup; it shows, unminimizes, and focuses the first process's main window.
-Closing the main window keeps the process running, and clicking the macOS Dock
-icon shows, unminimizes, and focuses that existing window again.
+Closing the main window keeps the process, listener, and enabled menu bar running
+while switching macOS to Accessory activation policy to hide the running Dock
+entry. Autostart uses the same hidden policy. Opening History, Search, or Settings
+from the menu bar, or reopening the app from Finder/a pinned Dock shortcut,
+restores Regular activation policy and shows, unminimizes, and focuses the
+existing window. Explicit Quit still exits.
 
 The Settings switch reads OS state. A write is followed by read-back and a
 mismatch is an error. If a frontend update fails, Settings reads the current

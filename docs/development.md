@@ -161,17 +161,22 @@ The following is a checklist, not a record of completed testing:
     a pin marker, and separate section labels. With more pins than the limit,
     confirm Open History reaches the remaining entries. Verify direct-click
     restore and hover preview in both menu groups and across their separator.
-13. Close the main window and click the macOS Dock icon; confirm the existing
-    window shows and focuses again. Then start a duplicate process and confirm
-    the same window activates while only one owner/listener/tray remains.
+13. Close the main window; confirm its running Dock entry disappears while the
+    menu bar and clipboard capture remain active. Open History, Search, and
+    Settings from the menu bar after separate closes; each must restore the Dock
+    entry and focus the existing window. Repeat quick open/close cycles and
+    close after minimizing/restoring. Reopen from Finder or a pinned Dock
+    shortcut, then start a duplicate process; confirm the same window activates
+    while only one owner/listener/tray remains. With menu visibility disabled,
+    verify relaunch still recovers the window. Explicit Quit must exit.
 14. Open Settings from the macOS application menu and with `Command+,`; confirm
     the tray Settings entry still works. Verify a left sidebar with a return
     button above General, Appearance, Clipboard, and Menu Bar, and the selected
     configuration on the right. Switch categories, then use the sidebar's top
     button to return to History from each category.
 15. Enable and disable launch at login and reopen Settings to verify OS state.
-16. Launch with the autostart flag and confirm the main window stays hidden
-    while capture and the menu bar remain active.
+16. Launch with the autostart flag and confirm the main window and running Dock
+    entry stay hidden while capture and the menu bar remain active.
 17. Verify `.clipecho` is `0700` and database/sidecars/mirror are `0600`.
 18. Inject unsafe/unwritable private paths and slow/failing JSONL writes; verify
     safe errors, committed database mutations, complete last snapshot, and
