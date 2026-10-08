@@ -16,8 +16,9 @@ The matrix builds each target on matching native hardware:
 | `aarch64-apple-darwin` | `macos-15`       |
 | `x86_64-apple-darwin`  | `macos-15-intel` |
 
-Normal branch/PR CI also runs its complete automated verification matrix on
-both native runners. Native compilation and unit tests improve architecture
+PR CI (also available manually) runs its complete automated verification matrix
+on both native runners; branch pushes and PR merges do not trigger it again.
+Native compilation and unit tests improve architecture
 coverage; they do not replace the manual Apple Silicon/Intel runtime evidence
 required below.
 
