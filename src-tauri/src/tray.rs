@@ -120,19 +120,12 @@ fn apply_tray_visibility<T>(
 }
 
 pub fn show_page<R: Runtime>(app: &AppHandle<R>, page: &str) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| ERROR_MAIN_WINDOW_UNAVAILABLE.to_string())?;
-
-    window
-        .show()
-        .map_err(|_| ERROR_WINDOW_OPERATION_FAILED.to_string())?;
-    window
-        .unminimize()
-        .map_err(|_| ERROR_WINDOW_OPERATION_FAILED.to_string())?;
-    window
-        .set_focus()
-        .map_err(|_| ERROR_WINDOW_OPERATION_FAILED.to_string())?;
+    crate::lifecycle::activate_main_window(app).map_err(|error| match error {
+        crate::lifecycle::LifecycleError::MainWindowUnavailable => {
+            ERROR_MAIN_WINDOW_UNAVAILABLE.to_string()
+        }
+        _ => ERROR_WINDOW_OPERATION_FAILED.to_string(),
+    })?;
 
     app.emit(NAVIGATE_EVENT, page.to_string())
         .map_err(|_| ERROR_WINDOW_OPERATION_FAILED.to_string())
