@@ -50,8 +50,8 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Resolve published clipboard listener crate
-        run: cargo update --manifest-path src-tauri/Cargo.toml -p copy_event_listener
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked --target ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -72,14 +72,15 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Test Rust
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
       - name: Publish Tauri release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          args: ${{ matrix.args }}
+          tauriScript: bash scripts/tauri-release.sh
+          args: ${{ matrix.args }} -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: ClipEcho ${{ github.ref_name }}
           releaseDraft: false
