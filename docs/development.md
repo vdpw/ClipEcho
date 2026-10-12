@@ -12,9 +12,10 @@ The checked-in Rust manifest uses the published crate:
 copy_event_listener = "0.1.2"
 ```
 
-No sibling checkout or local path dependency is required. The release workflow
-keeps a defensive legacy path-to-published replacement step, but it is a no-op
-for the current manifest.
+No sibling checkout or local path dependency is required. CI and release use
+the committed `src-tauri/Cargo.lock` with `--locked`; they never update Rust
+dependencies. See [Rust Dependency Updates](release.md#rust-dependency-updates)
+for the PR-based update procedure.
 
 Rust Tauri is pinned to `2.11.4` and `tauri-build` to `2.6.3`; keep the pair
 compatible during patch upgrades.
@@ -71,9 +72,9 @@ pnpm test
 pnpm build
 pnpm security-check
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml
-pnpm desktop:build
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+pnpm desktop:build -- --locked
 ```
 
 CI runs when a pull request is opened, reopened, or updated, and can also be

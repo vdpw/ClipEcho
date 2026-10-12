@@ -26,15 +26,16 @@ required below.
 
 Each release job:
 
-1. checks out the repository;
+1. checks out the tagged commit, including `src-tauri/Cargo.lock`;
 2. installs pnpm 10.33.0, Node LTS, Rust, and the matching target;
-3. resolves and updates the published `copy_event_listener` package;
+3. fetches Rust dependencies with `cargo fetch --locked` for the matching target;
 4. installs the frozen pnpm lockfile;
 5. runs frontend type-check, lint, and tests;
 6. runs `pnpm security-check`;
-7. checks Rust formatting and runs Rust tests;
+7. checks Rust formatting and runs Rust tests with `--locked`;
 8. invokes `tauri-apps/tauri-action@v0`, whose configured build runs the
-   frontend production build and packages the matching native target;
+   frontend production build and packages the matching native target with
+   `-- --locked` forwarded to Cargo;
 9. publishes generated release notes and artifacts.
 
 The checked-in manifest already uses:
@@ -46,13 +47,52 @@ copy_event_listener = "0.1.2"
 Local development and release builds do not require a sibling
 `copy_event_listener` checkout.
 
+## Rust Dependency Updates
+
+`"0.1.2"` is a compatible version requirement, not an exact pin. The committed
+`src-tauri/Cargo.lock` selects the reviewed versions of all Rust dependencies,
+including transitive dependencies and registry checksums. Do not run
+`cargo update`, regenerate the lockfile, or replace dependencies in release CI.
+
+Cargo's `--locked` fails if the lockfile is missing or dependency resolution
+would change it. It still allows downloading the locked crates on a cold
+runner; `--frozen` also forbids network access and is not needed here.
+Tauri receives Cargo flags after `--`: the action uses
+`args: ${{ matrix.args }} -- --locked`.
+
+The action runs `scripts/tauri-release.sh`, which compares the working lockfile
+byte-for-byte with `HEAD` before and after Tauri. A missing or changed lockfile
+fails the build command before the action creates a release or uploads assets.
+Checking only in a later workflow step would be too late. `pnpm test` includes
+regression checks for the workflow flags and this failure behavior.
+
+To intentionally update the listener, work on a normal PR branch:
+
+```bash
+# Edit Cargo.toml first if the desired version is outside its current requirement.
+cargo update --manifest-path src-tauri/Cargo.toml -p copy_event_listener
+git diff -- src-tauri/Cargo.toml src-tauri/Cargo.lock
+cargo check --manifest-path src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+```
+
+Review all resulting lockfile changes, including transitive dependencies, and
+commit `Cargo.lock` together with any manifest changes. Other Rust dependency
+updates follow the same process. Run the existing automated gates and applicable
+manual checks, have the PR reviewed and both native CI jobs pass, then tag the
+approved commit. A release failure must be fixed through that process, never by
+removing `--locked` or updating dependencies during the release job.
+
+This locks Rust dependency selection; floating toolchains, runners, and action
+versions mean it does not promise byte-identical installation packages.
+
 ## Local Release Build
 
 Build the native release package from the current source with the same ad-hoc
 signing identity used by the release workflow:
 
 ```bash
-env APPLE_SIGNING_IDENTITY=- pnpm desktop:build
+env APPLE_SIGNING_IDENTITY=- bash scripts/tauri-release.sh build -- --locked
 ```
 
 The command writes the `.app` and `.dmg` bundles under

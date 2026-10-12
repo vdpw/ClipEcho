@@ -7,7 +7,7 @@ explanations in `docs/` and load them on demand.
 
 `ClipEcho` is a Tauri 2 desktop clipboard manager. The UI is React 18,
 TypeScript, and Vite in `src/`; the backend is Rust in `src-tauri/`; clipboard
-capture comes from the local path dependency `../../copy_event_listener`; local
+capture comes from the published `copy_event_listener` crate; local
 history and settings are stored in SQLite via `rusqlite`.
 
 The app captures clipboard events, stores normalized history in SQLite, renders
@@ -20,8 +20,8 @@ history in the Tauri window, and mirrors recent items into the macOS menu bar.
 - Desktop shell: Tauri 2.
 - Rust edition: 2021.
 - Database: `$HOME/.clipecho/clipecho.db`.
-- Local clipboard dependency: `copy_event_listener = { path = "../../copy_event_listener" }`.
-- Release workflow swaps that local dependency to `copy_event_listener = "0.1.2"`.
+- Clipboard dependency: `copy_event_listener = "0.1.2"`, resolved by `src-tauri/Cargo.lock`.
+- CI and release use `--locked`; dependency updates belong in reviewed PRs.
 
 ## Commands
 
