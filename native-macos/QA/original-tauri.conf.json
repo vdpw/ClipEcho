@@ -1,0 +1,13 @@
+{
+  "productName": "ClipEcho Original QA",
+  "identifier": "com.copy-stack.desktop.qa",
+  "build": {
+    "beforeDevCommand": "pnpm dev --port 5174 --strictPort",
+    "devUrl": "http://localhost:5174"
+  },
+  "app": {
+    "security": {
+      "devCsp": "default-src 'self' http://localhost:5174; connect-src ipc: http://ipc.localhost http://localhost:5174 ws://localhost:5174; img-src 'self' blob: http://localhost:5174; media-src 'self' blob:; style-src 'self' 'unsafe-inline' http://localhost:5174; script-src 'self' 'unsafe-eval' http://localhost:5174; frame-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; worker-src 'none'; manifest-src 'self'"
+    }
+  }
+}
