@@ -184,6 +184,16 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
       anchor.hash.flatMap { cards[$0] }.map { $0.frame.minY - anchor.offset } ?? anchor.scrollTop
     scrollTo(y)
   }
+  private func layoutPreservingAnchor() {
+    let anchor = captureAnchor()
+    layoutContent()
+    restoreAnchor(anchor)
+  }
+  /// Inspection-only identities let isolated self-tests detect rebuilding an
+  /// unchanged card (and its WebKit process) after a refresh or another page.
+  func diagnosticCardIdentity(contentHash: String) -> ObjectIdentifier? {
+    cards[contentHash].map(ObjectIdentifier.init)
+  }
   func reload(reset: Bool = false, scrollToTop: Bool = false) {
     guard isViewLoaded else { return }
     loadTask?.cancel()
@@ -261,7 +271,7 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
     }
   }
   private func rebuildCards() {
-    for card in cards.values { card.removeFromSuperview() }
+    let previousCards = cards
     cards = [:]
     for heading in headings { heading.removeFromSuperview() }
     headings = []
@@ -274,7 +284,14 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
         headings.append(heading)
         document.addSubview(heading)
       }
-      let card = HistoryCardView(item: item, language: controller.settings.language, query: query)
+      let card: HistoryCardView
+      if let previous = previousCards[item.contentHash],
+        previous.matches(item: item, language: controller.settings.language, query: query)
+      {
+        card = previous
+      } else {
+        card = HistoryCardView(item: item, language: controller.settings.language, query: query)
+      }
       card.expanded = expanded.contains(item.contentHash)
       card.copied = copiedHash == item.contentHash
       card.restoring = restoring.contains(item.contentHash)
@@ -286,21 +303,21 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
       card.onDelete = { [weak self] in self?.delete(item) }
       card.onRetry = { [weak self] in self?.loadDetail(item, retry: true) }
       card.onHeightChanged = { [weak self] in
-        guard let self else { return }
-        let anchor = captureAnchor()
-        layoutContent()
-        restoreAnchor(anchor)
+        self?.layoutPreservingAnchor()
       }
       if let detail = detailCache[item.contentHash] {
         card.detail = detail
         card.detailState = detail.hasContent ? 3 : 0
       } else if detailTasks[item.contentHash] != nil {
         card.detailState = 1
+      } else if card.detail != nil || card.detailState != 0 {
+        card.clearDetail()
       }
       card.refresh()
-      document.addSubview(card)
+      if card.superview == nil { document.addSubview(card) }
       cards[item.contentHash] = card
     }
+    for (hash, card) in previousCards where cards[hash] !== card { card.removeFromSuperview() }
     titleLabel.stringValue = t("clipboardHistory")
     errorNotice.language = controller.settings.language
     captureNotice.language = controller.settings.language
@@ -439,7 +456,7 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
     guard let card = cards[item.contentHash] else { return }
     card.expanded = expanded.contains(item.contentHash)
     card.refresh()
-    layoutContent()
+    layoutPreservingAnchor()
     if card.expanded, !controller.settings.compactMode, item.dataType != "text",
       detailCache[item.contentHash] == nil
     {
@@ -449,6 +466,7 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
   private func loadDetail(_ item: HistoryItem, retry: Bool = false) {
     let hash = item.contentHash
     guard detailTasks[hash] == nil else { return }
+    if retry { cards[hash]?.clearDetail() }
     let detailRequest = detailGeneration
     let requestID = UUID()
     while detailTaskOrder.count >= 12 {
@@ -461,7 +479,7 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
     detailTaskOrder.append(hash)
     cards[hash]?.detailState = 1
     cards[hash]?.refresh()
-    layoutContent()
+    layoutPreservingAnchor()
     detailTasks[hash] = Task { @MainActor [weak self] in
       guard let self else { return }
       defer {
@@ -491,13 +509,13 @@ final class HistoryViewController: NSViewController, NSTextFieldDelegate {
         cards[hash]?.detail = detail
         cards[hash]?.detailState = detail.hasContent ? 3 : 0
         cards[hash]?.refresh()
-        layoutContent()
+        layoutPreservingAnchor()
       } catch {
         guard !Task.isCancelled, detailGeneration == detailRequest, detailTaskIDs[hash] == requestID
         else { return }
         cards[hash]?.detailState = 2
         cards[hash]?.refresh()
-        layoutContent()
+        layoutPreservingAnchor()
       }
     }
   }

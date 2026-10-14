@@ -29,6 +29,8 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
   private var controls: [NSControl] = []
   private var optimistic: [String: String] = [:]
   private var busy = false
+  private var pendingTheme: String?
+  private var themeSaveTask: Task<Void, Never>?
   private var moving = false
   private var clearing = false
   private var errorMessage = ""
@@ -89,7 +91,9 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
     navigationTitle.translatesAutoresizingMaskIntoConstraints = false
     titleWrap.addSubview(navigationTitle)
     let bodyWidth = bodyStack.widthAnchor.constraint(equalTo: contentScroll.contentView.widthAnchor)
-    bodyWidth.priority = .defaultHigh
+    // Let the window's current-size constraint (priority 500) win once the
+    // body reaches its maximum width, without capping the whole window.
+    bodyWidth.priority = NSLayoutConstraint.Priority(499)
     NSLayoutConstraint.activate([
       navigationTitle.leadingAnchor.constraint(equalTo: titleWrap.leadingAnchor, constant: 8),
       navigationTitle.trailingAnchor.constraint(
@@ -314,7 +318,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
         ) { [weak self] in self?.saveSetting("theme", value: theme) }
         button.identifier = NSUserInterfaceItemIdentifier("theme:" + theme)
         controls.append(button)
-        button.isEnabled = canEdit
+        button.isEnabled = canChooseTheme
         choices.addArrangedSubview(button)
       }
       choices.widthAnchor.constraint(equalToConstant: 228).isActive = true
@@ -369,11 +373,14 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
         [weak self] in self?.saveSetting("show_in_menu_bar", value: String($0))
       }
       let count = numericRow(
-        key: "menu_bar_item_limit", title: t("menuBarItemLimit"), help: nil, compact: true)
+        key: "menu_bar_item_limit", title: t("menuBarItemLimit"),
+        help: f("menuBarItemLimitDescription", [String(settings.menuBarItemLimit)]), compact: true)
       count.toolTip = f("menuBarItemLimitDescription", [String(settings.menuBarItemLimit)])
       addGroup(rows: [toggle, count])
     }
-    for control in controls { control.isEnabled = control.isEnabled && canEdit }
+    for control in controls {
+      control.isEnabled = control.isEnabled && (control is SettingsThemeButton ? canChooseTheme : canEdit)
+    }
     view.layoutSubtreeIfNeeded()
     contentScroll.contentView.scroll(
       to: NSPoint(
@@ -383,6 +390,9 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
     contentScroll.reflectScrolledClipView(contentScroll.contentView)
   }
   private var canEdit: Bool { !controller.readOnly && !busy }
+  private var canChooseTheme: Bool {
+    !controller.readOnly && (!busy || themeSaveTask != nil)
+  }
 
   private func addBody(_ child: NSView) {
     bodyStack.addArrangedSubview(child)
@@ -443,7 +453,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
     _ text: String, size: CGFloat = 13, weight: NSFont.Weight = .regular, secondary: Bool = false,
     color: NSColor? = nil
   ) -> NSTextField {
-    let result = NSTextField(wrappingLabelWithString: text)
+    let result = SettingsWrappingLabel(text)
     result.font = .systemFont(ofSize: size, weight: weight)
     let textColor = color ?? (secondary ? SettingsPalette.secondary : SettingsPalette.primary)
     result.textColor = textColor
@@ -485,6 +495,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
     copy.orientation = .vertical
     copy.alignment = .leading
     copy.spacing = 2
+    title.widthAnchor.constraint(equalTo: copy.widthAnchor).isActive = true
     if let description {
       let text = label(description, size: size, secondary: true)
       if let symbol {
@@ -504,6 +515,7 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
       }
     }
     copy.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    copy.setContentCompressionResistancePriority(.required, for: .vertical)
     return copy
   }
   private func makeRow(copy: NSView, control: NSView, minimum: CGFloat, padding: CGFloat = 10)
@@ -515,7 +527,13 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
     row.spacing = 12
     row.distribution = .fill
     row.edgeInsets = NSEdgeInsets(top: padding, left: 12, bottom: padding, right: 12)
-    row.heightAnchor.constraint(greaterThanOrEqualToConstant: minimum).isActive = true
+    NSLayoutConstraint.activate([
+      row.heightAnchor.constraint(greaterThanOrEqualToConstant: minimum),
+      copy.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: padding),
+      copy.bottomAnchor.constraint(lessThanOrEqualTo: row.bottomAnchor, constant: -padding),
+      control.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: padding),
+      control.bottomAnchor.constraint(lessThanOrEqualTo: row.bottomAnchor, constant: -padding),
+    ])
     control.setContentHuggingPriority(.required, for: .horizontal)
     control.setContentCompressionResistancePriority(.required, for: .horizontal)
     copy.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -698,17 +716,68 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
       value: String(
         value * (key == "max_history_bytes" || key == "max_event_bytes" ? 1_048_576 : 1)))
   }
+  /// Isolated regression tests wait for persistence without a timing guess.
+  func diagnosticWaitForThemeSave() async { await themeSaveTask?.value }
+
+  private func saveTheme(_ value: String) {
+    guard canChooseTheme else { return }
+    saveDrafts()
+    closeHelp()
+    pendingTheme = value
+    optimistic["theme"] = value
+    showError("")
+    updateThemeSelection(value)
+    controller.previewTheme(value)
+    guard themeSaveTask == nil else { return }
+    busy = true
+    themeSaveTask = Task { [weak self] in
+      guard let self else { return }
+      var lastValue = value
+      while let next = self.pendingTheme {
+        self.pendingTheme = nil
+        lastValue = next
+        let succeeded = await self.controller.updateSettingAsync("theme", value: next)
+        // A newer click owns the visible appearance and error state.
+        guard self.pendingTheme == nil else { continue }
+        if succeeded {
+          self.retryAction = nil
+          self.showError("")
+        } else {
+          self.retryAction = { [weak self] in self?.saveTheme(next) }
+          if self.errorMessage.isEmpty { self.showError(self.t("error.update_settings")) }
+        }
+      }
+      self.optimistic.removeValue(forKey: "theme")
+      self.controller.previewTheme(nil)
+      self.busy = false
+      self.themeSaveTask = nil
+      self.rebuildError()
+      if self.category == .appearance {
+        self.updateThemeSelection(self.controller.settings.theme)
+        self.restoreFocus(key: "theme", value: lastValue)
+      } else {
+        self.reload()
+      }
+    }
+  }
+
+  /// Updating the existing radio controls keeps focus, layout, and the window
+  /// intact throughout a rapid sequence of theme selections.
+  private func updateThemeSelection(_ value: String) {
+    for case let button as SettingsThemeButton in controls {
+      button.chosen = button.theme == value
+      button.isEnabled = !controller.readOnly
+    }
+  }
+
   private func saveSetting(_ key: String, value: String) {
+    if key == "theme" { saveTheme(value); return }
     guard canEdit else { return }
     saveDrafts()
     closeHelp()
     busy = true
     optimistic[key] = value
     showError("")
-    if key == "theme" {
-      view.window?.appearance =
-        value == "system" ? nil : NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
-    }
     retryAction = { [weak self] in self?.saveSetting(key, value: value) }
     rebuildCategory()
     Task { [weak self] in
@@ -722,9 +791,6 @@ final class SettingsViewController: NSViewController, NSTextFieldDelegate {
       } else if self.errorMessage.isEmpty {
         self.showError(self.t("error.update_settings"))
       }
-      let theme = self.controller.settings.theme
-      self.view.window?.appearance =
-        theme == "system" ? nil : NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
       self.reload()
       self.restoreFocus(key: key, value: value)
     }

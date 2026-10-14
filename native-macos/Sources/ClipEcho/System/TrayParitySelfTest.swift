@@ -25,7 +25,22 @@ enum TrayParitySelfTest {
     }
     guard probe.mode == RunLoop.Mode.eventTracking.rawValue else { throw Failure.assertion }
   }
-  static func run() throws {
+  @MainActor private static func previewFitsTextView(_ layout: TrayPresentation.PreviewLayout) -> Bool {
+    let view = NSTextView(frame: NSRect(origin: .zero, size: layout.size))
+    view.isHorizontallyResizable = false
+    view.isVerticallyResizable = false
+    view.textContainerInset = TrayPresentation.previewInsets
+    view.textContainer?.widthTracksTextView = true
+    view.textContainer?.lineFragmentPadding = 0
+    view.textStorage?.setAttributedString(
+      NSAttributedString(string: layout.text, attributes: TrayPresentation.previewAttributes))
+    guard let manager = view.layoutManager, let container = view.textContainer else { return false }
+    manager.ensureLayout(for: container)
+    let height = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+    return ceil(height) + view.textContainerInset.height * 2 <= layout.size.height
+  }
+
+  @MainActor static func run() throws {
     func require(_ value: Bool) throws { if !value { throw Failure.assertion } }
     let pinned = HistoryItem(
       contentHash: String(repeating: "a", count: 64), dataType: "text",
@@ -51,6 +66,28 @@ enum TrayParitySelfTest {
     let long = TrayPresentation.previewLayout(
       String(repeating: "line\n", count: 100), availableWidth: 500, availableHeight: 120)
     try require(long?.text.hasSuffix("...") == true && (long?.size.height ?? 0) <= 120)
+    let samples = [
+      "export CLIPECHO_SYNTHETIC_SETTING=\"" + String(repeating: "abc123", count: 14)
+        + "\"\nexport CLIPECHO_SYNTHETIC_SECOND=\"" + String(repeating: "xyz789", count: 14) + "\"",
+      String(repeating: "word wrapped preview ", count: 20),
+      "第一行中文与 emoji 👩🏽‍💻\n" + String(repeating: "混合 abc 👨‍👩‍👧‍👦\t", count: 20),
+      String(repeating: "\tindented text\n", count: 80),
+    ]
+    for (index, sample) in samples.enumerated() {
+      guard let complete = TrayPresentation.previewLayout(
+        sample, availableWidth: 500, availableHeight: 3000)
+      else { throw Failure.assertion }
+      try require(complete.text == sample)
+      try require(previewFitsTextView(complete))
+      guard let limited = TrayPresentation.previewLayout(
+        sample, availableWidth: index == 3 ? 140 : 380, availableHeight: 90)
+      else { throw Failure.assertion }
+      try require(limited.text.hasSuffix("...") && limited.size.height <= 90)
+      try require(previewFitsTextView(limited))
+    }
+    // A screen too small to display even the truncation marker has no panel.
+    try require(
+      TrayPresentation.previewLayout("too small", availableWidth: 16, availableHeight: 12) == nil)
     let origin = TrayPresentation.previewOrigin(
       screen: NSRect(x: 0, y: 0, width: 1200, height: 800),
       item: NSRect(x: 950, y: 600, width: 200, height: 20), size: NSSize(width: 180, height: 60))

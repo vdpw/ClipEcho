@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import ClipEchoCore
 
 @MainActor
@@ -18,6 +19,7 @@ final class AppController: NSObject, NSWindowDelegate {
   let mirror: HistoryMirror?
   private var pendingItems: Set<String> = []
   private var settingsMutationInFlight = false
+  private var themePreview: String?
   private let loginItem: any LoginItemManaging
   private let pasteboard: NSPasteboard
   private let autosaveWindowFrame: Bool
@@ -73,7 +75,11 @@ final class AppController: NSObject, NSWindowDelegate {
     window.title = "ClipEcho"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
-    window.contentMinSize = NSSize(width: 600, height: 400)
+    let minimumSize = NSSize(width: 600, height: 400)
+    let maximumSize = NSSize(width: 1000, height: 900)
+    window.contentMinSize = minimumSize
+    window.contentMaxSize = maximumSize
+    window.collectionBehavior.insert(.fullScreenNone)
     window.isMovableByWindowBackground = false
     window.isReleasedWhenClosed = false
     window.delegate = self
@@ -86,6 +92,16 @@ final class AppController: NSObject, NSWindowDelegate {
     self.window = window
     historyView = HistoryViewController(controller: self)
     settingsView = SettingsViewController(controller: self)
+    // AppKit ignores contentMin/MaxSize for Auto Layout content. Bound both
+    // pages explicitly, while leaving every size inside this range available.
+    for content in [historyView.view, settingsView.view] {
+      NSLayoutConstraint.activate([
+        content.widthAnchor.constraint(greaterThanOrEqualToConstant: minimumSize.width),
+        content.heightAnchor.constraint(greaterThanOrEqualToConstant: minimumSize.height),
+        content.widthAnchor.constraint(lessThanOrEqualToConstant: maximumSize.width),
+        content.heightAnchor.constraint(lessThanOrEqualToConstant: maximumSize.height),
+      ])
+    }
     installContent(historyView)
   }
 
@@ -94,10 +110,9 @@ final class AppController: NSObject, NSWindowDelegate {
     let frame = window.frame
     let size = window.contentView?.bounds.size ?? frame.size
     content.view.frame = NSRect(origin: .zero, size: size)
-    content.preferredContentSize = size
     window.contentViewController = content
-    // AppKit uses a new controller's fitting size when attaching it. Page
-    // navigation must preserve the user's window rather than shrink it.
+    // Preserve the current frame when attaching a page. A preferredContentSize
+    // would create fixed-size constraints that override interactive resizing.
     window.setFrame(frame, display: window.isVisible)
   }
 
@@ -233,9 +248,37 @@ final class AppController: NSObject, NSWindowDelegate {
   }
 
   @discardableResult func updateSettingAsync(_ key: String, value: String) async -> Bool {
-    await mutateAndWait(operation: "update_settings", settingsMutation: true) {
+    if key == "theme" { return await persistTheme(value) }
+    return await mutateAndWait(operation: "update_settings", settingsMutation: true) {
       try await self.history.setSetting(key: key, value: value)
     }
+  }
+
+  /// A theme changes presentation only: avoid history statistics, menu queries,
+  /// and export work while the user is choosing an appearance.
+  private func persistTheme(_ value: String) async -> Bool {
+    guard !settingsMutationInFlight else { return false }
+    settingsMutationInFlight = true
+    defer { settingsMutationInFlight = false }
+    do {
+      guard !readOnly else { throw StorageError.readOnly }
+      try await history.setSetting(key: "theme", value: value)
+      settings = try await history.settings()
+      applyAppearance()
+      return true
+    } catch {
+      if let saved = try? await history.settings() { settings = saved }
+      applyAppearance()
+      presentError(error)
+      return false
+    }
+  }
+
+  /// Keep the newest selection visible while earlier writes finish. Clearing
+  /// the preview restores the saved appearance after success or failure.
+  func previewTheme(_ theme: String?) {
+    themePreview = theme
+    applyAppearance()
   }
 
   func moveStorage(to directory: URL) {
@@ -337,11 +380,27 @@ final class AppController: NSObject, NSWindowDelegate {
   }
 
   private func applyAppearance() {
-    switch settings.theme {
-    case "light": NSApp.appearance = NSAppearance(named: .aqua)
-    case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-    default: NSApp.appearance = nil
+    let appearance: NSAppearance?
+    switch themePreview ?? settings.theme {
+    case "light": appearance = NSAppearance(named: .aqua)
+    case "dark": appearance = NSAppearance(named: .darkAqua)
+    default: appearance = nil
     }
+    guard NSApp.appearance?.name != appearance?.name || window?.appearance != nil else { return }
+    // All windows inherit the app appearance. A second explicit window theme
+    // causes another appearance invalidation and prevents System inheritance.
+    // Commit the visible frame during the click, including menu tracking mode.
+    NSAnimationContext.beginGrouping()
+    NSAnimationContext.current.duration = 0
+    NSAnimationContext.current.allowsImplicitAnimation = false
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    window?.appearance = nil
+    NSApp.appearance = appearance
+    window?.contentView?.layoutSubtreeIfNeeded()
+    window?.displayIfNeeded()
+    CATransaction.commit()
+    NSAnimationContext.endGrouping()
   }
 
   func t(_ key: String) -> String { L10n.string(key, language: settings.language) }

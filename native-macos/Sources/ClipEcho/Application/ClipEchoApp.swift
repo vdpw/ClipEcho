@@ -181,6 +181,9 @@ struct ClipEchoApp {
       if let failure = error as? NativeSelfTest.Failure {
         print("Native self-test assertion: \(failure)")
       }
+      if let failure = error as? ClipboardCaptureSelfTest.Failure {
+        print("Clipboard capture self-test assertion: \(failure)")
+      }
       if CommandLine.arguments.contains("--self-test") {
         if let failure = error as? StorageError {
           print("Native self-test storage failure: \(failure)")

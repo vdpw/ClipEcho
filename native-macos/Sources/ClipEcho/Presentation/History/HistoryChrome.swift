@@ -12,6 +12,11 @@ final class HistoryRootView: NSView {
     HistoryVisual.canvas(self).setFill()
     bounds.fill()
   }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
+    needsLayout = true
+  }
 }
 @MainActor
 final class HistoryDocumentView: NSView {
@@ -20,6 +25,10 @@ final class HistoryDocumentView: NSView {
   override func draw(_ rect: NSRect) {
     HistoryVisual.canvas(self).setFill()
     bounds.fill()
+  }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
   }
 }
 @MainActor
@@ -50,6 +59,10 @@ final class HistoryCountView: NSView {
     (value as NSString).draw(
       at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2),
       withAttributes: attributes)
+  }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
   }
 }
 @MainActor
@@ -92,6 +105,13 @@ final class HistorySearchView: NSVisualEffectView {
     clearButton.onClick = { [weak self] in self?.onClear?() }
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    input.textColor = HistoryVisual.text(self)
+    input.currentEditor()?.textColor = input.textColor
+    needsLayout = true
+    paint.needsDisplay = true
+  }
   override func layout() {
     super.layout()
     paint.frame = bounds
@@ -173,6 +193,10 @@ final class HistoryEmptyView: NSView {
     addSubview(copy)
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsLayout = true
+  }
   override func layout() {
     super.layout()
     heading.stringValue = title
@@ -212,6 +236,10 @@ final class HistoryNoticeView: NSView {
     retry.isHidden = warning
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsLayout = true
+  }
   func desiredHeight(width: CGFloat) -> CGFloat {
     max(
       46,

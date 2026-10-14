@@ -498,6 +498,7 @@ final class SettingsThemeButton: NSButton {
   let theme: String
   var chosen: Bool = false {
     didSet {
+      state = chosen ? .on : .off
       needsDisplay = true
       setAccessibilityValue(chosen ? 1 : 0)
     }
@@ -524,8 +525,26 @@ final class SettingsThemeButton: NSButton {
   required init?(coder: NSCoder) { nil }
   override var isFlipped: Bool { true }
   override var wantsDefaultClipping: Bool { false }
-  @objc private func activate() { if !chosen { handler?() } }
+  @objc private func activate() {
+    if isEnabled && !chosen { handler?() }
+  }
+  override func mouseDown(with event: NSEvent) {
+    guard isEnabled else { return }
+    window?.makeFirstResponder(self)
+    // The full custom-drawn card is the hit target. NSButtonCell's radio
+    // indicator/title hit region does not match this thumbnail and label.
+    activate()
+  }
+  override func accessibilityPerformPress() -> Bool {
+    guard isEnabled else { return false }
+    activate()
+    return true
+  }
   override func keyDown(with event: NSEvent) {
+    if [36, 49, 76].contains(event.keyCode) {
+      activate()
+      return
+    }
     guard [123, 124, 125, 126].contains(event.keyCode) else {
       super.keyDown(with: event)
       return
@@ -534,7 +553,10 @@ final class SettingsThemeButton: NSButton {
     guard let index = choices.firstIndex(where: { $0 === self }), !choices.isEmpty else { return }
     let increment = event.keyCode == 124 || event.keyCode == 125 ? 1 : -1
     let next = choices[(index + increment + choices.count) % choices.count]
-    if next.isEnabled { next.performClick(nil) }
+    if next.isEnabled {
+      window?.makeFirstResponder(next)
+      next.activate()
+    }
   }
   override func draw(_ dirtyRect: NSRect) {
     let preview = NSRect(x: 0, y: 0, width: 68, height: 46)
