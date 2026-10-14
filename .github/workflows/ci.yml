@@ -42,6 +42,10 @@ jobs:
       - name: Build release app
         run: ./scripts/build-app.sh release
 
+      - name: Prepare CI display for window size checks
+        timeout-minutes: 2
+        run: ./scripts/prepare-ci-display.sh
+
       - name: Run isolated AppKit and WebKit self-test
         timeout-minutes: 5
         run: ./scripts/self-test.sh

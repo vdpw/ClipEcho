@@ -102,6 +102,7 @@ enum NativeSelfTest {
     controller.showHistory()
     try require(controller.window?.isVisible == true && app.activationPolicy() == .regular)
     let historySize = controller.window?.contentView?.bounds.size
+    report("Native self-test window geometry: content=\(String(describing: historySize)), frame=\(String(describing: controller.window?.frame)), screens=\(NSScreen.screens.map { String(describing: $0.visibleFrame) }.joined(separator: "; "))")
     try require(historySize == NSSize(width: 600, height: 700))
     controller.showSettings()
     try require(controller.window?.contentViewController is SettingsViewController)
