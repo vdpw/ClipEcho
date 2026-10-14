@@ -13,65 +13,42 @@ permissions:
 
 jobs:
   verify:
-    name: Verify frontend, backend, and security guardrails (${{ matrix.architecture }})
+    name: Verify Swift app (${{ matrix.architecture }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - architecture: Apple Silicon
             runner: macos-15
+            binary_arch: arm64
           - architecture: Intel
             runner: macos-15-intel
+            binary_arch: x86_64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
         with:
-          version: 10.33.0
+          persist-credentials: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: pnpm
+      - name: Install Swift 6.4.1
+        run: ./scripts/setup-ci-swift.sh
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Test Swift core
+        run: ./scripts/test.sh
 
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
+      - name: Build release app
+        run: ./scripts/build-app.sh release
 
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Run isolated AppKit and WebKit self-test
+        timeout-minutes: 5
+        run: ./scripts/self-test.sh
 
-      - name: Verify security configuration
-        run: pnpm security-check
-
-      - name: Type-check frontend
-        run: pnpm type-check
-
-      - name: Lint frontend
-        run: pnpm lint
-
-      - name: Test frontend
-        run: pnpm test
-
-      - name: Build frontend
-        run: pnpm build
-
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-
-      - name: Check Rust
-        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
-
-      - name: Test Rust
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Verify app signature and architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.binary_arch }}
+        run: |
+          codesign --verify --deep --strict --verbose=2 build/ClipEcho.app
+          test "$(lipo -archs build/ClipEcho.app/Contents/MacOS/ClipEcho)" = "$EXPECTED_ARCH"

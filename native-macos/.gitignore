@@ -1,8 +1,0 @@
-.build/
-.swiftpm/
-build/
-*.db
-*.db-wal
-*.db-shm
-*.db-journal
-.DS_Store

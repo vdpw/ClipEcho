@@ -1,184 +1,66 @@
-# Release Workflow
+# 发布指南
 
-## Trigger And Native Targets
+Swift/AppKit 工作流位于仓库根目录的 `.github/workflows/`，不再使用 Node、pnpm、
+Rust 或 Tauri 打包流程。应用产物为 `build/ClipEcho.app`，bundle identifier 沿用
+`com.copy-stack.desktop.native`，继续识别 Swift 版本的登录项。
 
-`.github/workflows/release.yml` runs for pushed `v*` tags.
+## Pull Request 验证
 
-```bash
-git tag v0.1.0
-git push origin v0.1.0
+`ci.yml` 在 `pull_request` 和 `workflow_dispatch` 时运行。相同引用的新运行会取消
+尚未完成的旧运行，两个架构各自执行：
+
+| 架构 | GitHub runner | 验证 |
+| --- | --- | --- |
+| Apple Silicon / arm64 | `macos-15` | Swift Testing、Release 构建、原生自检、严格签名及架构检查 |
+| Intel / x86_64 | `macos-15-intel` | Swift Testing、Release 构建、原生自检、严格签名及架构检查 |
+
+工作流安装固定 Swift 6.4.1 官方工具链，校验安装包身份及编译器版本，再使用
+项目脚本选择编译器及本地缓存。PR CI 的结果只证明对应构建和自动验证完成；
+实际发布由标签工作流处理。
+
+## 标签发布
+
+`release.yml` 在推送 `v*` 标签时启动。版本使用 `vX.Y.Z`；预发布可带
+`-alpha`、`-beta` 或 `-rc` 后缀，例如 `v0.5.0-beta.1`。
+打包时将数值版本写入 `CFBundleShortVersionString` 与 `CFBundleVersion`，该例为
+`0.5.0`；产物名称去掉标签开头的 `v`，保留预发布后缀。
+
+两个架构分别运行测试、构建、自检和签名/架构验证，再生成 ZIP、DMG 和 SHA-256
+校验文件。全部构建成功后集中创建一次 GitHub Release 并上传两个架构的产物。
+示例文件名：
+
+- Apple Silicon：`ClipEcho-0.5.0-beta.1-macos-arm64.zip`、`.dmg`、`.sha256`。
+- Intel：`ClipEcho-0.5.0-beta.1-macos-x86_64.zip`、`.dmg`、`.sha256`。
+
+按电脑架构选择对应文件。ZIP 保留完整 `.app`，DMG 提供应用与 Applications
+入口。同一标签重试发布时，已有 Release 会复用并覆盖同名产物。
+不要将单个架构完成或工作流启动视为整体发布已完成。
+
+本地手动打包已构建的应用：
+
+```sh
+./scripts/build-app.sh release
+./scripts/package-release.sh v0.5.0-beta.1 arm64
 ```
 
-The matrix builds each target on matching native hardware:
+第二个参数必须匹配已构建的二进制架构；Intel 使用 `x86_64`。
+产物写入 `build/release/`，打包会更新本地应用包的版本字段并重新签名。
+当前构建和发布使用 ad-hoc 签名，不含 Developer ID 签名或 Apple 公证。制作
+Developer ID 分发版本时需要单独配置签名身份、公证凭据与对应发布步骤。
 
-| Target                 | GitHub runner    |
-| ---------------------- | ---------------- |
-| `aarch64-apple-darwin` | `macos-15`       |
-| `x86_64-apple-darwin`  | `macos-15-intel` |
+## 发布前验证
 
-PR CI (also available manually) runs its complete automated verification matrix
-on both native runners; branch pushes and PR merges do not trigger it again.
-Native compilation and unit tests improve architecture
-coverage; they do not replace the manual Apple Silicon/Intel runtime evidence
-required below.
-
-## Automated Release Gate
-
-Each release job:
-
-1. checks out the tagged commit, including `src-tauri/Cargo.lock`;
-2. installs pnpm 10.33.0, Node LTS, Rust, and the matching target;
-3. fetches Rust dependencies with `cargo fetch --locked` for the matching target;
-4. installs the frozen pnpm lockfile;
-5. runs frontend type-check, lint, and tests;
-6. runs `pnpm security-check`;
-7. checks Rust formatting and runs Rust tests with `--locked`;
-8. invokes `tauri-apps/tauri-action@v0`, whose configured build runs the
-   frontend production build and packages the matching native target with
-   `-- --locked` forwarded to Cargo;
-9. publishes generated release notes and artifacts.
-
-The checked-in manifest already uses:
-
-```toml
-copy_event_listener = "0.1.2"
+```sh
+./scripts/test.sh
+./scripts/build-app.sh release
+./scripts/self-test.sh
+codesign --verify --deep --strict "build/ClipEcho.app"
 ```
 
-Local development and release builds do not require a sibling
-`copy_event_listener` checkout.
+对现有数据仅使用 `--verify-database` 的只读检查。可见界面验收使用
+[合成 QA 夹具](../QA/README.md)，检查菜单栏、搜索焦点、窗口关闭/重开、主题、
+语言、恢复和设置流程；实际登录启动、Universal Clipboard、菜单悬停面板及
+Apple Silicon/Intel 目标电脑仍需人工验证。
 
-## Rust Dependency Updates
-
-`"0.1.2"` is a compatible version requirement, not an exact pin. The committed
-`src-tauri/Cargo.lock` selects the reviewed versions of all Rust dependencies,
-including transitive dependencies and registry checksums. Do not run
-`cargo update`, regenerate the lockfile, or replace dependencies in release CI.
-
-Cargo's `--locked` fails if the lockfile is missing or dependency resolution
-would change it. It still allows downloading the locked crates on a cold
-runner; `--frozen` also forbids network access and is not needed here.
-Tauri receives Cargo flags after `--`: the action uses
-`args: ${{ matrix.args }} -- --locked`.
-
-The action runs `scripts/tauri-release.sh`, which compares the working lockfile
-byte-for-byte with `HEAD` before and after Tauri. A missing or changed lockfile
-fails the build command before the action creates a release or uploads assets.
-Checking only in a later workflow step would be too late. `pnpm test` includes
-regression checks for the workflow flags and this failure behavior.
-
-To intentionally update the listener, work on a normal PR branch:
-
-```bash
-# Edit Cargo.toml first if the desired version is outside its current requirement.
-cargo update --manifest-path src-tauri/Cargo.toml -p copy_event_listener
-git diff -- src-tauri/Cargo.toml src-tauri/Cargo.lock
-cargo check --manifest-path src-tauri/Cargo.toml --locked
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-```
-
-Review all resulting lockfile changes, including transitive dependencies, and
-commit `Cargo.lock` together with any manifest changes. Other Rust dependency
-updates follow the same process. Run the existing automated gates and applicable
-manual checks, have the PR reviewed and both native CI jobs pass, then tag the
-approved commit. A release failure must be fixed through that process, never by
-removing `--locked` or updating dependencies during the release job.
-
-This locks Rust dependency selection; floating toolchains, runners, and action
-versions mean it does not promise byte-identical installation packages.
-
-## Local Release Build
-
-Build the native release package from the current source with the same ad-hoc
-signing identity used by the release workflow:
-
-```bash
-env APPLE_SIGNING_IDENTITY=- bash scripts/tauri-release.sh build -- --locked
-```
-
-The command writes the `.app` and `.dmg` bundles under
-`src-tauri/target/release/bundle/` for the current Mac architecture. It does not
-notarize the package.
-
-Production packages do not subscribe to the development-only global runtime
-diagnostic event or render safe-diagnostic JSON. Actionable startup and
-user-invoked command errors remain localized and visible.
-
-The security gate checks strict production CSP, empty static asset scope,
-prototype freezing, per-window capabilities, absence of opener permissions,
-audited dependency floors, and both native CI/release runner entries.
-
-## Ad-Hoc Signing
-
-The project is not currently enrolled for Apple Developer signing/notarization.
-Jobs set:
-
-```yaml
-APPLE_SIGNING_IDENTITY: "-"
-```
-
-This creates an ad-hoc signature but does not establish a verified developer or
-notarize the app. Gatekeeper may require Right-click → Open or
-System Settings → Privacy & Security → Open Anyway.
-
-For a trusted downloaded artifact that still reports damage after being moved
-to `/Applications`, verify the signature before considering quarantine removal:
-
-```bash
-codesign --verify --deep --strict --verbose=4 "/Applications/ClipEcho.app"
-xattr -dr com.apple.quarantine "/Applications/ClipEcho.app"
-open "/Applications/ClipEcho.app"
-```
-
-## Required Pre-Tag Evidence
-
-Run the automated gate in `docs/security-release-checklist.md`, the relevant
-performance harness cases in `docs/performance.md`, and the full manual desktop
-matrix.
-
-At minimum, record native Apple Silicon and Intel evidence for:
-
-- clean install and existing-database migration, including a second startup
-  with no metadata rebuild;
-- `0700` directory and `0600` database/sidecar/mirror permissions;
-- manual launch, launch at login, app relocation, and duplicate launch;
-- protocol skip combinations, source/remote badges, and canonical restore from
-  both entry points;
-- resource rejection/degradation and malicious HTML;
-- 1000-row paging/lazy detail and menu bar behavior with all items plus
-  configured smaller limits;
-- offline use and unwritable/unsafe private paths;
-- slow/failing JSONL destination, last-snapshot integrity, and bounded exit.
-
-The checklist file is a test plan, not proof that these scenarios have already
-passed. Attach dated, redacted results to the release record. If one
-architecture cannot be exercised, keep the release blocked or obtain and
-document an explicit release exception.
-
-## Versions And Prereleases
-
-Check version consistency in:
-
-- `package.json`;
-- `src-tauri/Cargo.toml`;
-- `src-tauri/tauri.conf.json`.
-
-Tags containing `-alpha`, `-beta`, or `-rc` are published as prereleases.
-Others are normal releases. The workflow publishes immediately
-(`releaseDraft: false`) and generates release notes.
-
-## Post-Publish Verification
-
-Download each produced artifact on matching native hardware rather than relying
-only on the build job. Verify installation/approval, app launch, one synthetic
-capture and restore, menu bar operation, single-instance activation, and
-launch-at-login state.
-
-## Release Risks
-
-- Published listener behavior can change when its pinned version changes.
-- Ad-hoc builds are not notarized and can require explicit Gatekeeper approval.
-- Unit tests do not exercise real NSPasteboard, LaunchAgent state, app movement,
-  WebView security behavior, or filesystem fault timing.
-- Cross-compilation or native compilation alone is not runtime verification.
-- Clipboard databases, mirrors, paths, source identifiers, and bodies must not
-  appear in release logs or attachments; use synthetic redacted evidence.
+发布结果以 GitHub Actions 完成状态和 Release 页面中的全部产物为准。
+[历史验证记录](validation.md)保留此前环境的结果，不替代当前版本的发布验收。

@@ -1,24 +1,18 @@
-# Logs
-logs
+# Swift Package Manager and packaged applications
+.build/
+.swiftpm/
+build/
+
+# Local files and clipboard databases
+.DS_Store
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# Editor files
+.idea/
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
