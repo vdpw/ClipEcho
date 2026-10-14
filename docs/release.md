@@ -18,6 +18,13 @@ Rust 或 Tauri 打包流程。应用产物为 `build/ClipEcho.app`，bundle iden
 项目脚本选择编译器及本地缓存。PR CI 的结果只证明对应构建和自动验证完成；
 实际发布由标签工作流处理。
 
+原生自检保留 600×400 至 1000×900 的真实窗口断言。部分 Apple Silicon runner
+只有 1024×681 的可视区域，AppKit 会缩小初始窗口。因此 CI 与发布在自检前执行
+`scripts/prepare-ci-display.sh`：仅在 GitHub Actions 的 macOS 虚拟机中选择足够大的
+公开 CoreGraphics 显示模式，维持当前登录会话；必要时使用已安装的 Anka 工具。
+准备失败会让工作流失败，不跳过或放宽窗口断言。本地运行该脚本会拒绝执行，
+正常应用和本地自检不会修改用户显示配置。
+
 ## 标签发布
 
 `release.yml` 在推送 `v*` 标签时启动。版本使用 `vX.Y.Z`；预发布可带
