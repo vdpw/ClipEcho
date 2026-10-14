@@ -1,175 +1,119 @@
-<p align="center">
-  <img src="src-tauri/icons/128x128.png" width="96" height="96" alt="ClipEcho app icon">
-</p>
+# ClipEcho
 
-<h1 align="center">ClipEcho</h1>
+使用 **Swift 6.4.1 + AppKit** 的原生 macOS 剪贴板管理器，支持 **macOS 14+**。
+源码、资源、测试和构建脚本均位于仓库根目录；构建无需 Node.js、pnpm 或 Rust。
+Rust/Tauri/React 版本已移至只读归档仓库
+[ClipEcho-rust](https://github.com/vdpw/ClipEcho-rust)，保留原版源码和历史。
+本仓库后续维护 Swift/AppKit 实现。
 
-<p align="center">
-  A private, native-feeling clipboard history for macOS, built with Tauri, React, and Rust.
-</p>
+## 构建与运行
 
-ClipEcho runs quietly in the menu bar, records eligible clipboard content in
-a local SQLite database, and lets you restore recent items without sending
-clipboard data to a remote service.
+要求 macOS 14 或更高、Swift 6.4.1 工具链及配套 macOS SDK。可以使用 Apple
+Command Line Tools，无需完整 Xcode。没有第三方包依赖；AppKit、Foundation、
+CryptoKit、ImageIO、ServiceManagement、WebKit 和 SQLite 由系统提供。测试使用工具链
+自带的 Swift Testing。
 
-## Screenshots
+项目脚本单独选择 Swift 工具链及其 Testing 宏，默认使用
+`~/Library/Developer/Toolchains/swift-6.4.1-RELEASE.xctoolchain`。
+其他安装位置可通过 `CLIPECHO_SWIFT_TOOLCHAIN=/absolute/toolchain/path` 指定，
+或用 `CLIPECHO_SWIFT_EXEC` / `CLIPECHO_SWIFTC_EXEC` 指定配套编译器入口。
+具体设置见[开发指南](docs/development.md)。以下命令从仓库根目录执行。
 
-| View | Light | Dark |
-| --- | --- | --- |
-| Clipboard history | ![Light clipboard history with pinned items and expanded file paths](docs/images/clipecho-history-light.jpg) | ![Dark clipboard history with pinned items and expanded file paths](docs/images/clipecho-history-dark.jpg) |
-| Clipboard settings | ![Light clipboard settings with a maximum item size in MiB](docs/images/clipecho-settings-light.jpg) | ![Dark clipboard settings with a maximum item size in MiB](docs/images/clipecho-settings-dark.jpg) |
-
-> Every clipboard item shown in these screenshots is synthetic QA data.
-
-## Highlights
-
-- **Fast history:** loads summaries in bounded pages and fetches rich previews
-  only when an item is expanded.
-- **Rich clipboard support:** handles text, formatted text, images, files,
-  folders, and bounded media metadata.
-- **Quick restore:** restores an item from either the History page or the macOS
-  menu bar.
-- **Pinned items:** keeps important clips through automatic cleanup and asks
-  for confirmation before deleting a pinned item.
-- **File paths on demand:** expands files and folders to show their full paths
-  beneath their names.
-- **Private by default:** stores accepted content locally and gives database,
-  sidecar, and optional mirror files private permissions.
-- **Clipboard-aware filtering:** excludes transient, auto-generated,
-  concealed, and supported password-manager content before persistence.
-- **Storage controls:** configures history count, total storage, and maximum
-  item size (1–256 MiB, default 32 MiB), with an optional text-only compact mode.
-  Larger items keep bounded previews; reducing the item size limit preserves
-  existing history.
-- **Native lifecycle:** supports single-instance activation and opt-in launch
-  at login.
-- **Localized UI:** supports English, Simplified Chinese, and Traditional
-  Chinese, including system-language detection.
-
-## Requirements
-
-- macOS
-- Node.js 18 or newer
-- pnpm 10
-- Rust stable
-- Xcode Command Line Tools
-
-## Run From Source
-
-```bash
-git clone https://github.com/vdpw/copy_stack.git
-cd copy_stack
-corepack enable
-pnpm install
-pnpm desktop:dev
+```sh
+./scripts/test.sh
+./scripts/build-app.sh release
+open "build/ClipEcho.app"
 ```
 
-The development app uses the real macOS pasteboard. For isolated manual QA,
-follow the temporary-data workflow in
-[`docs/development.md`](docs/development.md).
+开发运行：`./scripts/run.sh`。应用打包为 `build/ClipEcho.app`，沿用 Swift 版本的
+bundle identifier `com.copy-stack.desktop.native`；关闭窗口会隐藏 Dock 图标，
+采集及菜单栏继续运行，重新打开应用会激活同一个窗口。`Command+,` 打开设置，
+`Command+F` 搜索，`Command+Q` 退出。
 
-## Build
+## 现有数据兼容
 
-```bash
-pnpm desktop:build
+默认直接打开 `$HOME/.clipecho/clipecho.db`，不另建一份历史数据。原生版本也识别
+同一目录的 `storage.json` 及 `storage-move.json`，因此能继续使用已有的自定义
+存储位置及迁移恢复记录。`COPY_STACK_QA_DATA_DIR` 可覆盖测试启动目录。
+
+当前 v4 数据库的历史、置顶、搜索索引和设置均可继续使用。二进制 `CSB1` 事件格式、
+SHA-256 内容标识及原有设置键保持兼容，新版本写入的记录也能由原版本读取。
+v3 可安全添加置顶字段；更早或更新的未知数据库格式会保留并拒绝打开，需先使用
+Rust 版本完成迁移。常规使用时选择一个版本运行，避免两个版本同时监控剪贴板。
+
+不修改历史的兼容检查：
+
+```sh
+"build/ClipEcho.app/Contents/MacOS/ClipEcho" --verify-database
 ```
 
-The Tauri bundle is written below `src-tauri/target/release/bundle/`. Current
-builds are ad-hoc signed and are not notarized; see
-[`docs/release.md`](docs/release.md) before distributing an artifact.
+可用 `--database /absolute/path/clipecho.db` 指定独立数据库，`--read-only` 禁用采集
+及数据库修改，`--hidden` 隐藏启动窗口。只读连接遵守 SQLite 的锁及 WAL 协议，
+不会改写历史和设置；SQLite 仍可维护读取所需的协调侧文件。
 
-## How It Works
+存储位置调整使用 SQLite 在线备份、完整性检查和原有恢复记录协议，保留历史、
+置顶、设置和搜索，并拒绝覆盖目标数据库。该流程独立于原版本的 VACUUM 实现。
 
-```text
-macOS pasteboard
-      │
-      ▼
-copy_event_listener
-      │  classify, normalize, filter
-      ▼
-Rust / Tauri backend ──► SQLite history
-      │                       │
-      ├──► menu bar           └──► optional atomic JSONL mirror
-      │
-      ▼
-React History + Settings
+## 已实现的功能
+
+- 文本、RTF、HTML、PNG、文件及文件夹等内容采集，多项目原样恢复。
+- 原版卡片界面、点击/回车/空格内联展开、50 条分页、自动加载、搜索、固定及删除。
+- 按需内联预览、原版 HTML 过滤与排版、图片缩略图和文件路径。
+- 原版菜单栏分组和文本悬停；窗口聚焦时采集更新保留锚点，失焦时滚回顶部。
+- 保留数量、历史容量、单次采集上限、文本精简模式和恢复排序。
+- 系统/浅色/深色主题，英文、简体中文、繁体中文及系统语言。
+- 登录启动、存储位置调整、同一用户单实例及关闭窗口后继续运行。
+- 原有可选 JSONL 开发镜像，独立读取连接、合并刷新及私有原子写入。
+
+HTML 预览使用系统 WebKit 的非持久隔离视图和原版过滤器，保留原版预览排版，
+禁止外部资源、导航和用户脚本。原始 HTML 和其他剪贴板格式仍保留用于恢复。
+固定记录不受常规清空和保留策略删除；设置页仅提供清空未固定，删除固定项目
+需要原版样式的确认浮层。
+
+代码按领域、应用服务、存储/系统适配器和界面重新组织；外观及操作以原版产品为
+兼容契约。初始窗口为 600×700，可在 600×400 至 1000×900 内调整，隐藏标题栏；
+设置保留四类侧栏、主题卡片及锚点帮助，
+恢复反馈、固定操作和滚动规则与原版一致。
+
+JSONL 镜像只在显式传入原有开发参数时启用，例如：
+
+```sh
+./scripts/run.sh --copy-stack-history-jsonl /absolute/private/folder/history.jsonl \
+  --copy-stack-history-jsonl-max-data-bytes 4096
 ```
 
-History order, deduplication, retention, and restore behavior are persisted in
-SQLite rather than simulated in React. The frontend requests 50 bounded
-summaries at a time, while rich HTML and media detail is loaded on demand.
+## 验证
 
-## Privacy Notes
-
-The default database is:
-
-```text
-$HOME/.clipecho/clipecho.db
+```sh
+./scripts/test.sh
+./scripts/build-app.sh release
+./scripts/self-test.sh
+"build/ClipEcho.app/Contents/MacOS/ClipEcho" --verify-database
+codesign --verify --deep --strict "build/ClipEcho.app"
 ```
 
-Change the directory in **Settings > Clipboard > Storage location**. ClipEcho
-moves the database and keeps using the previous location if the move fails.
-The directory setting stays in `$HOME/.clipecho/storage.json`.
+`scripts/self-test.sh` 调用已构建应用的 `--self-test`，检查退出状态及最终完成标记。
+自检使用真实 AppKit API，但只写独立命名的剪贴板和临时数据库；涵盖采集、
+恢复、过滤、置顶保护、设置导航、窗口尺寸、关闭/重开、Dock 策略，以及实际 WebKit
+HTML 过滤、CSP、字体与高度。测试不会替换系统主剪贴板。构建产物、数据库和
+缓存由 `.gitignore` 排除。
 
-The default data directory and database files are restricted to the current user, but clipboard history is
-not encrypted at rest. Anyone who can access your macOS account may be able to
-read it. Concealed/password-manager, transient, and auto-generated pasteboard
-items are skipped before they reach the database, tray, diagnostics, or JSONL
-mirror.
+界面核对时使用 `--qa --database /absolute/fixture/clipecho.db`，该模式使用独立
+命名剪贴板和独立实例锁。截图和辅助功能树只能使用合成夹具，具体步骤见
+[QA 指南](QA/README.md)。`--qa` 必须显式指定独立数据库。
 
-The optional JSONL mirror may contain accepted clipboard bodies. Treat it with
-the same care as the database and never attach either file to a bug report
-without reviewing and sanitizing it.
+发布前仍需在目标电脑人工验证登录启动、另一设备的 Universal Clipboard、
+多种应用的复制格式及所支持架构。本地及当前 GitHub 发布包使用 ad-hoc 签名，
+不含 Developer ID 签名或 Apple 公证。
 
-## Development Commands
+## GitHub Actions 与发布
 
-| Command                                            | Purpose                                               |
-| -------------------------------------------------- | ----------------------------------------------------- |
-| `pnpm desktop:dev`                                 | Run the React frontend inside the Tauri desktop shell |
-| `pnpm dev`                                         | Run the Vite frontend only                            |
-| `pnpm type-check`                                  | Type-check the frontend                               |
-| `pnpm lint`                                        | Lint TypeScript and React                             |
-| `pnpm test`                                        | Run frontend tests                                    |
-| `pnpm build`                                       | Build the frontend                                    |
-| `pnpm security-check`                              | Verify security configuration guardrails              |
-| `cargo check --manifest-path src-tauri/Cargo.toml` | Check the Rust backend                                |
-| `cargo test --manifest-path src-tauri/Cargo.toml`  | Run Rust tests                                        |
+CI 在 pull request 和手动触发时，分别验证 Apple Silicon（arm64）和 Intel
+（x86_64）：Swift Testing、Release 构建、AppKit/WebKit 自检、严格签名及架构检查。
+推送 `vX.Y.Z` 或 `vX.Y.Z-beta.1` 等标签时，发布工作流生成两个架构的 ZIP 与
+DMG，全部构建成功后发布同一 GitHub Release。
 
-The documentation index at [`docs/index.md`](docs/index.md) links to the
-architecture, frontend, backend, persistence, performance, security, and
-release guides. [`AGENTS.MD`](AGENTS.MD) is the compact project menu for coding
-agents.
-
-## Project Layout
-
-```text
-copy_stack/
-├── src/                  React and TypeScript frontend
-│   ├── features/         History and Settings
-│   ├── hooks/            Paging, detail cache, and settings state
-│   ├── api/              Typed Tauri invocation boundary
-│   └── lib/              Display and HTML-preview safety helpers
-├── src-tauri/            Rust backend and Tauri configuration
-│   └── src/
-│       ├── store/        SQLite, classification, paging, and previews
-│       ├── tray.rs       macOS menu-bar integration
-│       └── lib.rs        Commands and application lifecycle
-├── scripts/              Synthetic QA and performance helpers
-└── docs/                 Design and development documentation
-```
-
-## Platform Status
-
-ClipEcho currently targets macOS. Windows assets are generated for Tauri
-packaging compatibility, but Windows clipboard behavior is not implemented or
-supported.
-
-## Contributing
-
-Before opening a pull request, run the checks appropriate for your change from
-[`docs/development.md`](docs/development.md). Clipboard fixtures, screenshots,
-logs, and databases must contain synthetic data only.
-
-## License
-
-ClipEcho is available under the [MIT License](LICENSE).
+产物选择、版本号规则及发布前验证见[发布指南](docs/release.md)。
+完整文档见[文档索引](docs/index.md)。[历史验证记录](docs/validation.md)保留
+原生版本开发期间的结果与尚待人工复核的项目，不代表每次目录或工作流变更均
+重新完成了全部桌面验收。

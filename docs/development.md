@@ -1,301 +1,86 @@
-# Development Workflow
+# 开发指南
 
-## Prerequisites
+所有命令均从仓库根目录执行。要求 macOS 14+、Swift 6.4.1 及与编译器匹配的
+macOS SDK；Apple Command Line Tools 即可，无需完整 Xcode。主程序没有第三方
+Swift package 依赖，也不需要 Node.js、pnpm 或 Rust。SQLite 及 AppKit、Foundation、
+CryptoKit、ImageIO、ServiceManagement、WebKit 由系统提供。
 
-- Node.js 18 or newer and pnpm.
-- Rust stable.
-- macOS/Tauri build dependencies.
+## 工具链
 
-The checked-in Rust manifest uses the published crate:
+`scripts/toolchain.sh` 默认选择
+`~/Library/Developer/Toolchains/swift-6.4.1-RELEASE.xctoolchain`，仅为项目进程设置
+配套 Swift 编译器，不覆盖全局 PATH、clang 或 `TOOLCHAINS`。其他安装位置：
 
-```toml
-copy_event_listener = "0.1.2"
+```sh
+CLIPECHO_SWIFT_TOOLCHAIN=/absolute/path/to/swift-6.4.1-RELEASE.xctoolchain \
+  ./scripts/test.sh
 ```
 
-No sibling checkout or local path dependency is required. CI and release use
-the committed `src-tauri/Cargo.lock` with `--locked`; they never update Rust
-dependencies. See [Rust Dependency Updates](release.md#rust-dependency-updates)
-for the PR-based update procedure.
+`CLIPECHO_SWIFT_EXEC` 与 `CLIPECHO_SWIFTC_EXEC` 可分别指定 Swift 和 Swift 编译器
+入口；二者必须来自同一匹配工具链。测试脚本自动查找工具链内的 Swift Testing
+宏，必要时可用 `CLIPECHO_TESTING_MACROS` 指定已有的宏库。
+SwiftPM、编译器模块及包缓存全部放在 `.build/`，由 `.gitignore` 排除。
 
-Rust Tauri is pinned to `2.11.4` and `tauri-build` to `2.6.3`; keep the pair
-compatible during patch upgrades.
+## 构建与运行
 
-## Install And Run
-
-```bash
-pnpm install
-pnpm dev
-pnpm desktop:dev
+```sh
+./scripts/build-app.sh debug
+open "build/ClipEcho.app"
 ```
 
-Vite uses port 5173 with `strictPort: true`.
+`./scripts/run.sh` 会先构建 debug 包再打开应用，后续参数转交给应用：
 
-To keep manual debug QA away from the user's real history, create a private
-directory in macOS's per-user temporary area and point the debug build at a
-child directory:
-
-```bash
-CLIPECHO_QA_RUN_DIR="$(mktemp -d)"
-COPY_STACK_QA_DATA_DIR="$CLIPECHO_QA_RUN_DIR/data" pnpm desktop:dev
+```sh
+./scripts/run.sh --hidden
 ```
 
-This override is compiled only with debug assertions. Relative paths are
-rejected, the resulting `clipecho.db` still passes the private-file checks,
-and release builds use `$HOME/.clipecho` for bootstrap configuration and the
-default database. Storage changes within a QA run persist under this isolated
-bootstrap root. Do not substitute a
-fixed child directly under `/tmp` or `/private/tmp`: their public immediate
-parent is intentionally rejected. Reuse the generated directory for one QA
-session, then remove it after the app exits.
+Release 构建使用 `./scripts/build-app.sh release`。应用包名为 `ClipEcho.app`，
+bundle identifier 保留 `com.copy-stack.desktop.native`。构建脚本使用 ad-hoc 签名。
+本地 release 默认省略 dSYM；需要调试符号时使用
+`CLIPECHO_DEBUG_SYMBOLS=1 ./scripts/build-app.sh release`。
 
-Optional JSONL flags:
+源码目录、依赖方向和并发边界见[架构](architecture.md)。修改设置、编码或存储时
+保留 v4 schema、CSB1、原有设置键、内容标识与置顶规则；当前数据库未知版本或
+不安全路径应拒绝打开，不能用新建空数据库代替已有历史。
 
-```bash
-COPY_STACK_QA_DATA_DIR="$CLIPECHO_QA_RUN_DIR/data" pnpm desktop:dev -- \
-  -- \
-  --copy-stack-history-jsonl "$CLIPECHO_QA_RUN_DIR/clipecho-history.jsonl" \
-  --copy-stack-history-jsonl-max-data-bytes 4096
+## 验证
+
+```sh
+./scripts/test.sh
+./scripts/build-app.sh release
+./scripts/self-test.sh
+codesign --verify --deep --strict "build/ClipEcho.app"
 ```
 
-The mirror is a coalesced asynchronous snapshot, not a synchronous append log.
-It can contain accepted clipboard bodies and protocol metadata.
+Swift Testing 使用合成临时数据库验证纯核心、存储和 actor 行为；`--self-test`
+使用真实 AppKit/WebKit API、临时数据库和独立命名剪贴板验证系统集成，不替换
+系统主剪贴板。`scripts/self-test.sh` 调用已构建应用的 `--self-test`，同时检查
+进程退出状态与最终 `Native self-test passed:` 标记，避免提前退出被误判为通过。
+更改采集、恢复、窗口、菜单或设置交互后也需可见界面验收。
 
-`--copy-stack-autostart` is reserved for the OS login item. Use it manually only
-to test hidden-at-login policy.
+现有数据库兼容性检查使用只读入口：
 
-## Build And Automated Checks
-
-```bash
-pnpm type-check
-pnpm lint
-pnpm test
-pnpm build
-pnpm security-check
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-cargo check --manifest-path src-tauri/Cargo.toml --locked
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-pnpm desktop:build -- --locked
+```sh
+"build/ClipEcho.app/Contents/MacOS/ClipEcho" --verify-database
+"build/ClipEcho.app/Contents/MacOS/ClipEcho" \
+  --verify-database --database /absolute/path/clipecho.db
 ```
 
-CI runs when a pull request is opened, reopened, or updated, and can also be
-started manually with `workflow_dispatch`. Branch pushes (including PR merges
-into `dev` or `main`) do not start another CI run. Direct pushes without a PR
-therefore need a manual run when verification is wanted. A newer run for the
-same PR or manually selected ref cancels the previous unfinished run. Tag-based
-release verification remains independent.
+默认数据库为 `$HOME/.clipecho/clipecho.db`，应用沿用 `storage.json` 与
+`storage-move.json` 查找自定义位置并恢复迁移。只读检查不改写历史或设置；SQLite
+仍遵守锁和 WAL 协议，可维护读取所需的协调侧文件。常规 `--read-only` 启动禁用
+采集和数据库修改；`--hidden` 隐藏初始窗口。
 
-The normal CI matrix runs frontend checks/build, the security guardrail, Rust
-format/check/test, and dependency resolution natively on both `macos-15`
-(Apple Silicon) and `macos-15-intel` (Intel). This catches architecture-specific
-compile and unit-test failures, but it is not evidence that native UI,
-NSPasteboard, login-item, permissions, or fault scenarios were exercised.
+## 人工 QA
 
-## Performance Harness
+按[QA 指南](../QA/README.md)创建合成夹具，并使用
+`--qa --database /absolute/fixture/native/clipecho.db` 或独立 `ClipEcho QA.app`。
+界面截图和辅助功能树只能来自该夹具；不要采集生产历史或剪贴板正文。
 
-Run deterministic 100/1000-item text and mixed fixtures in release mode:
+关注卡片内联展开、搜索焦点、分页/滚动锚点、固定/删除确认、恢复排序、设置、
+三种语言及主题、窗口大小、关闭/重新打开和菜单悬停。实际登录启动、另一设备的
+Universal Clipboard、支持架构及不同来源应用格式需在目标环境分别验证。
+单元测试、自检或菜单辅助功能树不能代替可见悬停面板和状态栏弹出位置检查。
 
-```bash
-scripts/perf-history.sh
-```
-
-The harness uses synthetic private temporary data and prints JSON timing,
-payload, storage, and row-count records. See `docs/performance.md`; do not turn
-machine-dependent timings into ordinary unit-test thresholds.
-
-## Verification Matrix
-
-| Change                          | Required verification                                               |
-| ------------------------------- | ------------------------------------------------------------------- |
-| Frontend                        | type-check, lint, frontend tests, build                             |
-| Rust backend                    | Rust format, check, and tests                                       |
-| Command/event contract          | frontend and Rust checks plus desktop QA                            |
-| Capture/restore/protocol        | Rust tests plus real macOS NSPasteboard QA                          |
-| Persistence/migration/retention | Rust tests, legacy DB/rollback QA, second-start fast path           |
-| Paging/detail/tray performance  | structural tests, performance harness, desktop scroll/detail QA     |
-| Private files/JSONL             | Rust fault tests and native permission/failure QA                   |
-| CSP/capabilities/errors         | `pnpm security-check`, frontend tests, offline/malicious-preview QA |
-| Single instance/autostart       | lifecycle tests and packaged/manual macOS QA                        |
-| Release                         | every automated gate and completed security release matrix          |
-| Documentation only              | links, paths, command names, and `git diff --check`                 |
-
-## Required Manual Desktop QA
-
-The following is a checklist, not a record of completed testing:
-
-1. Copy synthetic text and confirm History and the menu bar update.
-2. Copy the same text again and confirm no duplicate and no order change.
-3. Page through at least 100 items; expand formatted/image/video details and
-   confirm detail is requested only on expansion.
-4. Search for text beyond the first loaded page, mixed-case text, a file name,
-   and one- or two-character CJK text. Verify pagination, `Command+F`, Escape,
-   live refresh, compact mode, restore, and delete while filtered. Use the menu
-   bar Search action and confirm the main-window field is focused.
-5. Trigger a focused live update while scrolled and with cards expanded; verify
-   the scroll anchor and expansion state remain stable. Repeat while the window
-   is unfocused and verify a new copy returns History to the newest row.
-6. Restore from History and the menu bar with both ordering settings. Verify
-   long menu labels copy directly without opening a submenu.
-7. Inspect the restored type list and confirm exactly one canonical source
-   marker and remote marker only when applicable.
-8. Exercise every synthetic NSPasteboard marker combination in
-   `docs/design/nspasteboard-protocol.md`; skipped content must not appear in
-   SQLite, History, tray, diagnostics, or JSONL.
-9. Exercise oversized formatted/image/event fixtures. Confirm safe text
-   degradation or a localized rejection notice, with no oversized IPC payload.
-   Set Maximum item size to 64 MiB and capture a synthetic 33 MiB item. Lower
-   it to 32 MiB: new oversized captures must be rejected, while the existing
-   item remains restorable without a rejection notice from its own echo.
-   Restart and verify the configured limit persists. Check blank, fractional,
-   zero, and greater-than-256 MiB input validation.
-10. Lower item and byte limits and confirm oldest unpinned rows are trimmed
-    while pinned rows survive. Repeat with pinned rows alone exceeding each
-    limit; totals may stay above the configured limit. Unpin an old row and
-    confirm the current retention rules apply immediately.
-11. Pin and unpin synthetic rows from History and search results. Verify pinned
-    grouping, the badge/button state, keyboard activation, disabled state while
-    saving, and no unintended expansion or clipboard write. Re-copy a pinned
-    row, restore it with both ordering settings, and restart; verify its pin
-    survives and ordering stays within its group. Request deletion of a pinned
-    row; verify default Cancel focus, Escape cancellation, and explicit
-    confirmation before deletion. Unpinned deletion remains immediate.
-    Clear from Settings and then the menu bar; verify pinned rows
-    survive in SQLite, the main window, the menu, and the optional JSONL mirror.
-12. Toggle compact mode, menu visibility, restore ordering, and all languages.
-    With menu visibility off, copy a synthetic item and confirm it is saved
-    without attempting preview installation or showing a global runtime-error
-    banner. Turn visibility on again and confirm the native item and hover
-    preview return. Set the menu count to 20 and then 0; verify 20 and all
-    retained rows up to the 1000-item ceiling appear, with pinned entries first,
-    a pin marker, and separate section labels. With more pins than the limit,
-    confirm Open History reaches the remaining entries. Verify direct-click
-    restore and hover preview in both menu groups and across their separator.
-13. Close the main window; confirm its running Dock entry disappears while the
-    menu bar and clipboard capture remain active. Open History, Search, and
-    Settings from the menu bar after separate closes; each must restore the Dock
-    entry and focus the existing window. Repeat quick open/close cycles and
-    close after minimizing/restoring. Reopen from Finder or a pinned Dock
-    shortcut, then start a duplicate process; confirm the same window activates
-    while only one owner/listener/tray remains. With menu visibility disabled,
-    verify relaunch still recovers the window. Explicit Quit must exit.
-14. Open Settings from the macOS application menu and with `Command+,`; confirm
-    the tray Settings entry still works. Verify a left sidebar with a return
-    button above General, Appearance, Clipboard, and Menu Bar, and the selected
-    configuration on the right. Switch categories, then use the sidebar's top
-    button to return to History from each category.
-15. Enable and disable launch at login and reopen Settings to verify OS state.
-16. Launch with the autostart flag and confirm the main window and running Dock
-    entry stay hidden while capture and the menu bar remain active.
-17. Verify `.clipecho` is `0700` and database/sidecars/mirror are `0600`.
-18. Inject unsafe/unwritable private paths and slow/failing JSONL writes; verify
-    safe errors, committed database mutations, complete last snapshot, and
-    bounded exit.
-19. Run offline and confirm history, settings, restore, and previews make no
-    external request.
-20. Run malicious HTML preview fixtures and verify scripts, navigation, forms,
-    external resources, and unsafe URLs do not execute.
-21. With more than 50 mixed pinned/unpinned rows, page across the group boundary
-    in History and search; verify no duplicates or omissions. Pin a row from a
-    later page and verify authoritative refresh while preserving the active
-    query. In compact mode, use equivalent plain/HTML/RTF text with mixed pin
-    flags; verify one pinned summary, group-wide Pin/Unpin and deletion, and
-    retained pin after a new compact capture consolidates the rows.
-22. Open a sanitized schema-v3 fixture and confirm migration to v4 defaults all
-    existing pins to false without changing payloads or timestamps. Pin rows,
-    restart twice, and verify persisted flags and ordinary startup behavior.
-23. Inspect History and Settings in light/dark appearance, reduced motion,
-    reduced transparency, increased contrast, and narrow window sizes. Verify
-    text readability, keyboard focus, hover/pressed/disabled controls, all three
-    languages, and native title-bar controls. The shared visual style must not
-    obscure clipboard content or destructive-action confirmation.
-24. In General, verify language and launch at login. In Appearance, verify theme.
-    In Clipboard, verify compact capture, restore order, count/total/per-item limits, and
-    Clear Unpinned. In Menu Bar, verify visibility and menu item limit. Check all
-    four categories by keyboard and pointer, localized labels, scroll behavior,
-    and the two-column layout at
-    the supported minimum window size.
-25. Select Light and Dark while the system uses the opposite appearance; verify
-    both main-window pages and native window appearance honor the explicit
-    choice. Return to System and change the macOS appearance while the app is
-    open; verify both layers follow it. Restart after each preference and
-    confirm persistence. Start from an existing database without a `theme` key
-    and confirm the default is System without rewriting clipboard history.
-    These are required manual checks, not a completed validation record.
-26. Expand single and mixed file/folder clips in both themes. Verify each full
-    path appears under its name in smaller, secondary-color text, long paths
-    wrap, and collapsed cards show names only. Repeat for Finder reference
-    URLs and missing paths; unavailable paths must not be invented.
-27. In Clipboard settings, change Storage location to an empty owned folder.
-    Verify history, pins, settings, search, restore, subsequent captures, and
-    the optional JSONL mirror still work; the old database must be removed.
-    Restart with the same QA root and verify the selected path persists.
-    Cancel the picker, select the current directory, then try a directory with
-    `clipecho.db` or a SQLite sidecar, and an unwritable directory. Failures must
-    retain the old displayed/configured path and usable history, show a localized
-    reason, and never overwrite existing destination files. Exercise config-write
-    and source-delete failures in the Rust fault tests.
-
-Record the full Apple Silicon and Intel evidence matrix in
-`docs/security-release-checklist.md` before release. Native dual-architecture CI
-does not mark that manual matrix complete.
-
-## Local Database Inspection
-
-```bash
-sqlite3 "$HOME/.clipecho/clipecho.db" "PRAGMA user_version;"
-sqlite3 "$HOME/.clipecho/clipecho.db" "SELECT key, value FROM app_metadata ORDER BY key;"
-sqlite3 "$HOME/.clipecho/clipecho.db" "SELECT key, value FROM settings ORDER BY key;"
-sqlite3 "$HOME/.clipecho/clipecho.db" "SELECT substr(content_hash, 1, 12), data_type, is_pinned, byte_count, timestamp FROM clipboard_events ORDER BY is_pinned DESC, timestamp DESC, content_hash ASC LIMIT 10;"
-stat -f '%Sp %N' "$HOME/.clipecho" "$HOME/.clipecho/clipecho.db"
-```
-
-Use sanitized copies for migration testing. Never commit or attach real
-databases, sidecars, JSONL mirrors, clipboard payloads, source identifiers, or
-user file paths.
-
-## Generated And Local Files
-
-Do not commit `node_modules/`, `dist/`, `src-tauri/target/`,
-`src-tauri/gen/`, SQLite files, logs, mirror files, or performance output
-containing non-synthetic paths.
-
-## Common Change Patterns
-
-### Command Or Payload
-
-Update the Rust command/type, `src/types.ts`, invoking hook, autogenerated
-permission, window capability, and relevant docs. Keep list summaries separate
-from detail payloads.
-
-### Persistence Or Ordering
-
-Read the ordering and pinned-history design records, plus the protocol record
-when relevant. Bump the schema or classifier metadata version as
-appropriate, make migration transactional, verify rollback and a second current
-startup, and preserve cursor ordering.
-
-### Capture Or Restore
-
-Keep event-wide protocol assessment first. Reuse the canonical restore helper
-for History and tray paths. Test compact/full mode and both restore-order
-settings on real NSPasteboard.
-
-### Tray
-
-Keep the tray query summary-only, honor `menu_bar_item_limit` (`0` means all,
-with a 1000-row ceiling), and do not introduce event decoding or local media
-reads during menu construction. Include pinned entries in the same limit and
-keep their leading section and marker. The macOS hover panel may perform only its
-existing single-row, 64 KiB display lookup; verify that it preserves line
-breaks, stays beside the menu on each display, and disappears when the menu
-closes.
-
-### Localized UI
-
-Update the TypeScript `Messages` interface and all three catalogs. Update Rust
-native catalogs when menu/window text changes. Verify both open webviews and
-native menus update together.
-
-### Security Or Release
-
-Run `pnpm security-check`, review `docs/security-release-checklist.md`, and keep
-manual evidence explicitly pending until it has actually been recorded.
+[validation.md](validation.md)保存按日期区分的历史结果。记录新结果时说明环境、
+分支、夹具和实际完成的检查；保留未执行或未通过的项目。
