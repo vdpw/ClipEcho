@@ -21,10 +21,9 @@ final class ConfirmationOverlay: NSPanel {
     overlay.hasShadow = false
     overlay.isReleasedWhenClosed = false
     overlay.level = parent.level
-    let root = NSVisualEffectView()
-    root.material = .underWindowBackground
-    root.blendingMode = .behindWindow
-    root.state = .active
+    // Dim the parent through a transparent panel instead of covering it with
+    // a full-window material, whose tint hides the underlying settings.
+    let root = NSView()
     root.wantsLayer = true
     root.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
     overlay.contentView = root
@@ -138,6 +137,13 @@ private final class ModalButton: NSButton {
     setAccessibilityLabel(title)
   }
   required init?(coder: NSCoder) { nil }
+  private var buttonShape: NSBezierPath {
+    NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+  }
+  // The native button cell's mask describes its text bezel, not our custom
+  // rounded background. Keep the system keyboard indicator on the same shape.
+  override var focusRingMaskBounds: NSRect { bounds }
+  override func drawFocusRingMask() { buttonShape.fill() }
   override func keyDown(with event: NSEvent) {
     switch event.keyCode {
     case 48:
@@ -161,7 +167,7 @@ private final class ModalButton: NSButton {
       destructive
       ? color.withAlphaComponent(isHighlighted ? 0.18 : 0.08)
       : NSColor.quaternaryLabelColor.withAlphaComponent(isHighlighted ? 0.25 : 0.14)
-    let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+    let path = buttonShape
     fill.setFill()
     path.fill()
     color.withAlphaComponent(destructive ? 0.28 : 0.12).setStroke()

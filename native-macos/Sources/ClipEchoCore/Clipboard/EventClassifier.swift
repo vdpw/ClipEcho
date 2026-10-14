@@ -91,7 +91,11 @@ public enum EventClassifier {
     }
 
     public static func compactTextEvent(_ event: ClipboardEvent) -> ClipboardEvent? {
-        guard event.items.count == 1, !containsAttachment(event),
+        compactTextEvent(event, allowInlineHTMLImages: true)
+    }
+
+    private static func compactTextEvent(_ event: ClipboardEvent, allowInlineHTMLImages: Bool) -> ClipboardEvent? {
+        guard event.items.count == 1, !containsAttachment(event, allowInlineHTMLImages: allowInlineHTMLImages),
               let text = event.representation(for: textType).flatMap({ EventCodec.strictUTF8($0.data) }),
               !text.contains("\u{fffc}") else { return nil }
         let value = text.replacingOccurrences(of: "\0", with: "")
@@ -114,7 +118,9 @@ public enum EventClassifier {
         guard let classified = classify(event: prepared), let encoded = try? EventCodec.encode(prepared) else { return nil }
         let display = boundedPersistedDisplay(classified.dataType, classified.display)
         let summary = boundedSummaryDisplay(classified.dataType, display)
-        let compact = compactMode ? classified : compactTextEvent(bounded).flatMap { classify(event: $0) }
+        // Full rows retain the legacy compact eligibility because older clients
+        // restore their raw payload. New compact captures encode text only.
+        let compact = compactMode ? classified : compactTextEvent(bounded, allowInlineHTMLImages: false).flatMap { classify(event: $0) }
         let compactDisplay = compact.map { boundedPersistedDisplay($0.dataType, $0.display) }
         let source = assessment.sourceBundleID.flatMap { $0.utf8.count <= 255 ? $0 : nil }
         let byteCount = encoded.count + display.count + summary.0.count + (compactDisplay?.count ?? 0) + (source?.utf8.count ?? 0)
@@ -292,12 +298,13 @@ public enum EventClassifier {
         return String(output)
     }
 
-    private static func containsAttachment(_ event: ClipboardEvent) -> Bool {
+    private static func containsAttachment(_ event: ClipboardEvent, allowInlineHTMLImages: Bool) -> Bool {
+        let htmlAttachments = allowInlineHTMLImages ? ["video", "object", "embed"] : ["img", "picture", "video", "object", "embed"]
         let attachments = ["public.file-url", "public.image", "public.png", "public.tiff", "public.jpeg", "public.jpg", "public.gif", "public.heic", "public.webp", "public.bmp", "public.movie", "public.video"]
         return event.items.flatMap(\.dataList).contains { value in
             let type = value.type.lowercased()
             if attachments.contains(type) { return true }
-            if type == "public.html" { return hasPrefixAfterDelimiter(value.data, delimiter: 60, prefixes: ["img", "picture", "video", "object", "embed"]) }
+            if type == "public.html" { return hasPrefixAfterDelimiter(value.data, delimiter: 60, prefixes: htmlAttachments) }
             if type == "public.rtf" { return hasPrefixAfterDelimiter(value.data, delimiter: 92, prefixes: ["pict"]) }
             return false
         }

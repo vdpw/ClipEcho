@@ -60,17 +60,98 @@ import Testing
         #expect(EventClassifier.classify(event: withSource)?.contentHash == hash)
     }
 
-    @Test func testCompactTextNullsPreservesMarkersAndRejectsInlineMedia() throws {
+    @Test func testCompactTextNullsPreservesMarkersAndRejectsNonTextAttachments() throws {
         let value = event([("public.utf8-plain-text", Data("hel\0lo\0".utf8)), ("public.html", Data("<p>hello</p>".utf8)), (PasteboardProtocol.remoteType, Data())])
         let prepared = try #require(EventClassifier.prepare(event: value, compactMode: true))
         #expect(prepared.display == Data("hello".utf8))
         #expect(prepared.contentHash == EventClassifier.hash(Data("hello".utf8)))
         #expect(prepared.isRemoteClipboard)
         #expect(prepared.compactContentHash == prepared.contentHash)
-        for (type, bytes) in [("public.html", Data("<IMG src='x'>".utf8)), ("public.rtf", Data(#"{\rtf1\PICT test}"#.utf8)), ("public.png", Data([1]))] {
+        for (type, bytes) in [("public.html", Data("<VIDEO src='x'>".utf8)), ("public.html", Data("<object data='x'></object>".utf8)), ("public.html", Data("<embed src='x'>".utf8)), ("public.rtf", Data(#"{\rtf1\PICT test}"#.utf8)), ("public.png", Data([1]))] {
             #expect(EventClassifier.compactTextEvent(event([("public.utf8-plain-text", Data("hello".utf8)), (type, bytes)])) == nil)
         }
         #expect(EventClassifier.compactTextEvent(event([("public.utf8-plain-text", Data("a\u{fffc}b".utf8))])) == nil)
+    }
+
+    @Test func testCompactBrowserSelectionKeepsTextWithHTMLImages() throws {
+        let text = "PLOS Biology — Synthetic research title\n合成研究标题的中文翻译\nhttps://example.test/favicon.png\nPubMed\n+1\nSynthetic selected paragraph."
+        let html = "<div><a href='https://example.test/paper'><img width='16' height='16' src='https://example.test/favicon.png'>PLOS Biology — Synthetic research title</a><p>合成研究标题的中文翻译</p><span>https://example.test/favicon.png</span><a href='https://example.test/pubmed'>PubMed</a><span>+1</span><p>Synthetic selected paragraph.</p></div>"
+        let value = event([
+            (EventClassifier.textType, Data(text.utf8)),
+            ("public.html", Data(html.utf8)),
+            ("org.chromium.internal.source-rfh-token", Data([0, 1, 2])),
+            ("org.chromium.source-url", Data("https://example.test/synthetic".utf8)),
+            (PasteboardProtocol.sourceType, Data("com.example.synthetic.browser".utf8)),
+            (PasteboardProtocol.remoteType, Data()),
+        ])
+        let compact = try #require(EventClassifier.prepare(event: value, compactMode: true))
+        #expect(compact.dataType == "text")
+        #expect(compact.display == Data(text.utf8))
+        #expect(compact.contentHash == EventClassifier.hash(Data(text.utf8)))
+        #expect(compact.sourceBundleID == "com.example.synthetic.browser")
+        #expect(compact.isRemoteClipboard)
+        let restored = try EventCodec.decode(compact.eventData)
+        #expect(restored.items.count == 1)
+        #expect(restored.items[0].dataList.map(\.type) == [EventClassifier.textType, PasteboardProtocol.sourceType, PasteboardProtocol.remoteType])
+        #expect(restored.representation(for: EventClassifier.textType)?.data == Data(text.utf8))
+        let full = try #require(EventClassifier.prepare(event: value, compactMode: false))
+        #expect(full.dataType == "html")
+        #expect(full.contentHash == EventClassifier.hash(Data(html.utf8)))
+        #expect(full.compactContentHash == nil && full.compactDisplay == nil)
+        let textOnly = try #require(EventClassifier.prepare(event: restored, compactMode: false))
+        #expect(textOnly.dataType == "text" && textOnly.contentHash == compact.contentHash)
+        #expect(textOnly.compactContentHash == compact.contentHash && textOnly.compactDisplay == compact.display)
+        #expect(try EventCodec.decode(full.eventData) == value)
+    }
+
+    @Test func testFullCapturePreservesLegacyCompactMetadataEligibility() throws {
+        let text = Data("Synthetic full-mode compatibility".utf8)
+        for value in [
+            event([(EventClassifier.textType, text)]),
+            event([(EventClassifier.textType, text), ("public.html", Data("<p>Synthetic full-mode compatibility</p>".utf8))]),
+            event([(EventClassifier.textType, text), ("public.rtf", Data(#"{\rtf1 Synthetic full-mode compatibility}"#.utf8))]),
+        ] {
+            let full = try #require(EventClassifier.prepare(event: value, compactMode: false))
+            #expect(full.compactContentHash == EventClassifier.hash(text) && full.compactDisplay == text)
+            #expect(try EventCodec.decode(full.eventData) == value)
+        }
+        for html in ["<p>Synthetic full-mode compatibility<img src='synthetic.png'></p>", "<picture><img src='synthetic.png'></picture>"] {
+            let value = event([(EventClassifier.textType, text), ("public.html", Data(html.utf8))])
+            let full = try #require(EventClassifier.prepare(event: value, compactMode: false))
+            #expect(full.dataType == "html" && full.contentHash == EventClassifier.hash(Data(html.utf8)))
+            #expect(full.compactContentHash == nil && full.compactDisplay == nil)
+            #expect(try EventCodec.decode(full.eventData) == value)
+        }
+    }
+
+    @Test func testCompactHTMLImagesUseValidTextWithoutImageHeuristics() throws {
+        let text = Data("Synthetic selected text".utf8)
+        for html in ["<IMG src='synthetic.png'>", "<p>Synthetic selected text<img src='synthetic.png'></p>", "<picture><source srcset='synthetic.webp'><img src='synthetic.png'></picture>"] {
+            let value = event([(EventClassifier.textType, text), ("public.html", Data(html.utf8))])
+            let compact = try #require(EventClassifier.prepare(event: value, compactMode: true))
+            #expect(compact.display == text && compact.contentHash == EventClassifier.hash(text))
+            #expect(try EventCodec.decode(compact.eventData) == event([(EventClassifier.textType, text)]))
+        }
+        let imageOnlyHTML = Data("<img src='synthetic.png'>".utf8)
+        #expect(EventClassifier.prepare(event: event([("public.html", imageOnlyHTML)]), compactMode: true) == nil)
+        for invalidText in [Data(), Data(" \n\t".utf8), Data([255]), Data("Synthetic \u{fffc}".utf8)] {
+            #expect(EventClassifier.prepare(event: event([(EventClassifier.textType, invalidText), ("public.html", imageOnlyHTML)]), compactMode: true) == nil)
+        }
+        for type in ["public.file-url", "public.image", "public.png", "public.tiff", "public.jpeg", "public.jpg", "public.gif", "public.heic", "public.webp", "public.bmp", "public.movie", "public.video"] {
+            #expect(EventClassifier.prepare(event: event([(EventClassifier.textType, text), ("public.html", imageOnlyHTML), (type, Data([1]))]), compactMode: true) == nil)
+        }
+        let multiple = ClipboardEvent(items: [event([(EventClassifier.textType, text)]).items[0], event([(EventClassifier.textType, text)]).items[0]])
+        #expect(EventClassifier.prepare(event: multiple, compactMode: true) == nil)
+    }
+
+    @Test func testCompactHTMLImageTextStillHonorsPrivacyMarkers() {
+        for marker in [PasteboardProtocol.concealedType, PasteboardProtocol.transientType, PasteboardProtocol.autoGeneratedType, "com.agilebits.onepassword"] {
+            let value = event([(EventClassifier.textType, Data("Synthetic private browser selection".utf8)), ("public.html", Data("<p>Synthetic text<img src='synthetic.png'></p>".utf8)), (marker, Data())])
+            for compactMode in [false, true] {
+                #expect(EventClassifier.prepare(event: value, compactMode: compactMode) == nil)
+                #expect(EventClassifier.contentHash(event: value, compactMode: compactMode) == nil)
+            }
+        }
     }
 
     @Test func testResourceLimitCountsBinaryOverheadAndCompleteFallback() throws {

@@ -95,64 +95,88 @@ enum TrayPresentation {
     let size: NSSize
     let text: String
   }
-  static func previewLayout(_ text: String, availableWidth: CGFloat, availableHeight: CGFloat)
-    -> PreviewLayout?
-  {
-    guard availableWidth > 0, availableHeight > 0 else { return nil }
+  @MainActor static var previewFont: NSFont {
+    .monospacedSystemFont(ofSize: 12, weight: .regular)
+  }
+  static let previewInsets = NSSize(width: 8, height: 6)
+
+  @MainActor static var previewAttributes: [NSAttributedString.Key: Any] {
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byWordWrapping
+    paragraph.tabStops = []
+    paragraph.defaultTabInterval = (" " as NSString).size(withAttributes: [.font: previewFont]).width * 4
+    return [.font: previewFont, .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]
+  }
+
+  @MainActor static func previewLayout(
+    _ text: String, availableWidth: CGFloat, availableHeight: CGFloat
+  ) -> PreviewLayout? {
+    let horizontalPadding = previewInsets.width * 2
+    let verticalPadding = previewInsets.height * 2
+    guard availableWidth > horizontalPadding, availableHeight > verticalPadding else { return nil }
+    let attributes = previewAttributes
     let maximumWidth = min(380, availableWidth)
     let minimumWidth = min(180, maximumWidth)
-    let columns =
-      text.split(separator: "\n", omittingEmptySubsequences: false).map {
-        previewColumns(String($0))
-      }.max() ?? 1
-    let width = min(max(CGFloat(columns) * 7.2 + 16, minimumWidth), maximumWidth)
-    let wrap = max(1, Int(floor(max(7.2, width - 16) / 7.2)))
-    let lineLimit = max(1, Int(floor(max(15, availableHeight - 12) / 15)))
-    let fitted = fitPreview(text, wrapColumns: wrap, maxLines: lineLimit)
-    let height = max(
-      min(36, availableHeight),
-      min(CGFloat(visualLines(fitted, wrapColumns: wrap)) * 15 + 12, availableHeight))
-    return PreviewLayout(size: NSSize(width: width, height: height), text: fitted)
-  }
-  static func fitPreview(_ text: String, wrapColumns: Int, maxLines: Int) -> String {
-    let wrap = max(1, wrapColumns)
-    let maximum = max(1, maxLines)
-    guard visualLines(text, wrapColumns: wrap) > maximum else { return text }
-    let finalLimit = max(0, wrap - min(3, wrap))
-    var result = String.UnicodeScalarView()
-    var line = 1
-    var columns = 0
-    for scalar in text.unicodeScalars {
-      if scalar == "\n" {
-        guard line < maximum else { break }
-        result.append(scalar)
-        line += 1
-        columns = 0
-        continue
-      }
-      var width = previewColumns(scalar, columns: columns)
-      if columns > 0 && columns + width > wrap {
-        line += 1
-        columns = 0
-        width = previewColumns(scalar, columns: columns)
-      }
-      guard line <= maximum else { break }
-      let limit = line == maximum ? finalLimit : wrap
-      if columns + width > limit {
-        guard line < maximum else { break }
-        line += 1
-        columns = 0
-        width = previewColumns(scalar, columns: columns)
-        guard width <= finalLimit else { break }
-      }
-      result.append(scalar)
-      columns += width
+    let naturalWidth = text.split(separator: "\n", omittingEmptySubsequences: false).map {
+      (String($0) as NSString).size(withAttributes: attributes).width
+    }.max() ?? 0
+    let width = min(max(ceil(naturalWidth) + horizontalPadding, minimumWidth), maximumWidth)
+    let container = NSTextContainer(
+      containerSize: NSSize(width: width - horizontalPadding, height: .greatestFiniteMagnitude))
+    container.lineFragmentPadding = 0
+    let manager = NSLayoutManager()
+    manager.addTextContainer(container)
+    let storage = NSTextStorage()
+    storage.addLayoutManager(manager)
+
+    func measure(_ value: String) -> CGFloat {
+      storage.setAttributedString(NSAttributedString(string: value, attributes: attributes))
+      manager.ensureLayout(for: container)
+      return ceil(max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY))
     }
-    var fitted = String(result)
-    while fitted.unicodeScalars.last?.properties.isWhitespace == true {
-      fitted.unicodeScalars.removeLast()
+
+    let textHeight = availableHeight - verticalPadding
+    var fitted = text
+    var height = measure(text)
+    if height > textHeight {
+      // Use TextKit's actual wrapping and fallback fonts. Counting columns or
+      // assuming a 15pt line height clips words, tabs, emoji and CJK text.
+      var characterLimit = 0
+      manager.enumerateLineFragments(forGlyphRange: manager.glyphRange(for: container)) {
+        rect, _, _, glyphs, stop in
+        guard ceil(rect.maxY) <= textHeight else { stop.pointee = true; return }
+        characterLimit = NSMaxRange(manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+      }
+      guard measure("...") <= textHeight else { return nil }
+      // Keep composed characters intact and only search the visible prefix.
+      var boundaries = [text.startIndex]
+      var characters = 0
+      for position in text.indices {
+        let next = text.index(after: position)
+        characters += text[position..<next].utf16.count
+        guard characters <= characterLimit else { break }
+        boundaries.append(next)
+      }
+      var lower = 0
+      var upper = boundaries.count - 1
+      fitted = "..."
+      while lower <= upper {
+        let middle = lower + (upper - lower) / 2
+        var candidate = String(text[..<boundaries[middle]])
+        while candidate.last?.isWhitespace == true { candidate.removeLast() }
+        candidate += "..."
+        if measure(candidate) <= textHeight {
+          fitted = candidate
+          lower = middle + 1
+        } else {
+          upper = middle - 1
+        }
+      }
+      height = measure(fitted)
     }
-    return fitted + "..."
+    return PreviewLayout(
+      size: NSSize(width: width, height: max(min(36, availableHeight), height + verticalPadding)),
+      text: fitted)
   }
   static func previewOrigin(screen: NSRect, item: NSRect, size: NSSize) -> NSPoint {
     let minimumX = screen.minX + 12
@@ -166,19 +190,6 @@ enum TrayPresentation {
     let minimumY = screen.minY + 12
     let maximumY = max(minimumY, screen.maxY - size.height - 12)
     return NSPoint(x: x, y: min(max(item.midY - size.height / 2, minimumY), maximumY))
-  }
-  private static func previewColumns(_ value: String) -> Int {
-    value.unicodeScalars.reduce(0) { $0 + previewColumns($1, columns: $0) }
-  }
-  private static func previewColumns(_ scalar: Unicode.Scalar, columns: Int) -> Int {
-    scalar == "\t" ? 4 - columns % 4 : scalar.isASCII ? 1 : 2
-  }
-  private static func visualLines(_ value: String, wrapColumns: Int) -> Int {
-    max(
-      1,
-      value.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) {
-        $0 + max(1, (previewColumns(String($1)) + wrapColumns - 1) / wrapColumns)
-      })
   }
   private static func menuColumns(_ scalar: Unicode.Scalar) -> Int {
     let ranges: [ClosedRange<UInt32>] = [

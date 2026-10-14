@@ -9,6 +9,11 @@ final class ClipboardMonitor {
     private let onError: (any Error) -> Void
     private var timer: Timer?
     private var observedChangeCount: Int
+    private var pendingReadChangeCount: Int?
+    private var pendingReadAttempts = 0
+    // Producers can declare a generation before its promised public body is ready.
+    // Retry for at most 2.4 seconds at the normal 300 ms polling cadence.
+    static let maxReadAttempts = 8
     private var suppression: RestoreSuppression?
     private let processor = CaptureProcessor()
     private var generation = 0
@@ -43,6 +48,7 @@ final class ClipboardMonitor {
     func start() {
         guard timer == nil else { return }
         observedChangeCount = pasteboard.changeCount
+        pendingReadChangeCount = nil; pendingReadAttempts = 0
         let timer = Timer(timeInterval: 0.3, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in await self?.pollNow() }
         }
@@ -52,6 +58,7 @@ final class ClipboardMonitor {
 
     func stop() {
         timer?.invalidate(); timer = nil; suppression = nil
+        pendingReadChangeCount = nil; pendingReadAttempts = 0
         generation += 1; nextSequence = 0; deliverySequence = 0; completed.removeAll()
     }
 
@@ -61,14 +68,34 @@ final class ClipboardMonitor {
         guard nextSequence - deliverySequence < 2 else { return }
         let count = pasteboard.changeCount
         guard count != observedChangeCount else { return }
-        observedChangeCount = count
+        if pendingReadChangeCount != count {
+            pendingReadChangeCount = count; pendingReadAttempts = 0
+        }
         if let pending = suppression {
             suppression = nil
-            if pending.suppresses(changeCount: count) { return }
+            if pending.suppresses(changeCount: count) {
+                finishRead(changeCount: count)
+                return
+            }
         }
         do {
-            guard let input = try readEvent(expectedChangeCount: count) else { return }
             let settings = settingsProvider()
+            let finalAttempt = pendingReadAttempts + 1 >= Self.maxReadAttempts
+            let input: CaptureInput
+            switch try readEvent(expectedChangeCount: count, compactMode: settings.compactMode,
+                                allowIncompleteData: finalAttempt) {
+            case .ignored:
+                finishRead(changeCount: count)
+                return
+            case .pending:
+                pendingReadAttempts += 1
+                if finalAttempt { finishRead(changeCount: count) }
+                return
+            case .ready(let ready): input = ready
+            }
+            // Consume only a completed read, before awaiting the processing actor,
+            // so another poll cannot enqueue the same generation twice.
+            finishRead(changeCount: count)
             let sequence = nextSequence; nextSequence += 1
             let capturedGeneration = generation
             let result = await processor.prepare(input, compactMode: settings.compactMode, maxEventBytes: settings.maxEventBytes)
@@ -83,7 +110,15 @@ final class ClipboardMonitor {
             }
         } catch Failure.pasteboardChanged {
             // A newer generation is picked up on the next poll, never a mixed event.
-        } catch { onError(error) }
+        } catch {
+            finishRead(changeCount: count)
+            onError(error)
+        }
+    }
+
+    private func finishRead(changeCount: Int) {
+        observedChangeCount = changeCount
+        pendingReadChangeCount = nil; pendingReadAttempts = 0
     }
 
     func restore(_ stored: StoredEvent, compactMode: Bool) async throws {
@@ -106,18 +141,24 @@ final class ClipboardMonitor {
             return object
         }
         guard !objects.isEmpty else { throw Failure.cannotRestore }
+        pendingReadChangeCount = nil; pendingReadAttempts = 0
         pasteboard.clearContents()
         let success = pasteboard.writeObjects(objects)
         suppression = RestoreSuppression(changeCount: pasteboard.changeCount, expiresAt: Date().addingTimeInterval(5))
         guard success else { throw Failure.writeFailed }
     }
 
-    private func readEvent(expectedChangeCount: Int) throws -> CaptureInput? {
+    private enum ReadResult {
+        case ignored, pending, ready(CaptureInput)
+    }
+
+    private func readEvent(expectedChangeCount: Int, compactMode: Bool,
+                           allowIncompleteData: Bool) throws -> ReadResult {
         let items = pasteboard.pasteboardItems ?? []
-        guard !items.isEmpty else { return nil }
+        guard !items.isEmpty else { return .pending }
         let typeLists = items.map { $0.types.map(\.rawValue) }
         // Presence-only privacy assessment of every item precedes ALL payload reads.
-        guard PasteboardProtocol.disposition(forTypes: typeLists) == .record else { return nil }
+        guard PasteboardProtocol.disposition(forTypes: typeLists) == .record else { return .ignored }
         guard items.count <= EventCodec.maxItems else { throw EventCodec.Failure.tooManyItems }
         for types in typeLists {
             guard types.count <= EventCodec.maxRepresentationsPerItem else { throw EventCodec.Failure.tooManyRepresentations }
@@ -126,6 +167,10 @@ final class ClipboardMonitor {
         var values = typeLists.map { Array<ClipboardRepresentation?>(repeating: nil, count: $0.count) }
         // Read bounded fallback/provenance first, but keep the original flavor order.
         let preferred = Set([EventClassifier.textType, PasteboardProtocol.sourceType, PasteboardProtocol.remoteType])
+        let supportedTypes = Set([EventClassifier.textType, "public.rtf", "public.png", "public.html", "public.file-url"])
+        var missingSupportedBody = false
+        var missingTextBody = false
+        var hasSupportedBody = false
         var byteCount = 8 + items.count * 4
         for priority in [true, false] {
             for itemIndex in items.indices {
@@ -134,7 +179,12 @@ final class ClipboardMonitor {
                     guard preferred.contains(type) == priority else { continue }
                     let bytes = items[itemIndex].data(forType: NSPasteboard.PasteboardType(type))
                         ?? (type == PasteboardProtocol.remoteType || type == PasteboardProtocol.sourceType ? Data() : nil)
-                    guard let bytes else { continue }
+                    guard let bytes else {
+                        missingSupportedBody = missingSupportedBody || supportedTypes.contains(type)
+                        missingTextBody = missingTextBody || type == EventClassifier.textType
+                        continue
+                    }
+                    hasSupportedBody = hasSupportedBody || supportedTypes.contains(type)
                     byteCount += 12 + type.utf8.count + bytes.count
                     if byteCount > EventCodec.maxBlobBytes {
                         if priority { throw Failure.tooLarge }
@@ -144,14 +194,18 @@ final class ClipboardMonitor {
                         let partial = ClipboardEvent(items: values.map { ClipboardItem(dataList: $0.compactMap { $0 }) })
                         guard let text = partial.representation(for: EventClassifier.textType) else { throw Failure.tooLarge }
                         let markers = partial.items.flatMap(\.dataList).filter { $0.type == PasteboardProtocol.sourceType || $0.type == PasteboardProtocol.remoteType }
-                        return CaptureInput(event: ClipboardEvent(items: [ClipboardItem(dataList: [text] + markers)]), fallbackOnly: true)
+                        return .ready(CaptureInput(event: ClipboardEvent(items: [ClipboardItem(dataList: [text] + markers)]), fallbackOnly: true))
                     }
                     values[itemIndex][typeIndex] = ClipboardRepresentation(type: type, data: bytes)
                 }
             }
         }
         guard pasteboard.changeCount == expectedChangeCount else { throw Failure.pasteboardChanged }
-        return CaptureInput(event: ClipboardEvent(items: values.map { ClipboardItem(dataList: $0.compactMap { $0 }) }), fallbackOnly: false)
+        // Do not delay a valid public fallback while optional rich/private flavors
+        // are unavailable. Compact mode still needs its promised UTF-8 body.
+        let needsBody = compactMode ? missingTextBody : missingSupportedBody && !hasSupportedBody
+        if needsBody && !allowIncompleteData { return .pending }
+        return .ready(CaptureInput(event: ClipboardEvent(items: values.map { ClipboardItem(dataList: $0.compactMap { $0 }) }), fallbackOnly: false))
     }
 }
 

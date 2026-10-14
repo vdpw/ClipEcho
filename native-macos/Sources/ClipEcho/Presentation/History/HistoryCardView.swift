@@ -172,6 +172,10 @@ final class HistoryActionButton: NSButton {
     setAccessibilityLabel(label)
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    needsDisplay = true
+  }
   override func updateTrackingAreas() {
     super.updateTrackingAreas()
     for area in trackingAreas { removeTrackingArea(area) }
@@ -313,6 +317,10 @@ final class HistoryCardView: NSView {
   private var previousCopied = false
   private var focusFromMouse = false
   private var keyboardFocusVisible = false
+  private var showsLoading: Bool {
+    detailState == 1 || (detailState == 3 && preview?.isReady == false)
+  }
+  private var showsStatus: Bool { expanded && (showsLoading || detailState == 2) }
   override var isFlipped: Bool { true }
   override var acceptsFirstResponder: Bool { true }
   init(item: HistoryItem, language: String, query: String) {
@@ -368,6 +376,18 @@ final class HistoryCardView: NSView {
   }
   required init?(coder: NSCoder) { nil }
   private func t(_ key: String) -> String { L10n.string(key, language: language) }
+  func matches(item: HistoryItem, language: String, query: String) -> Bool {
+    self.item == item && self.language == language && self.query == query
+  }
+  var diagnosticPreviewIdentity: ObjectIdentifier? { preview.map(ObjectIdentifier.init) }
+  var diagnosticPreviewIsReady: Bool { preview?.isReady ?? false }
+  var diagnosticRetryIsVisible: Bool { !retryButton.isHidden }
+  func diagnosticSimulateHTMLProcessTermination() {
+    preview?.diagnosticSimulateHTMLProcessTermination()
+  }
+  func diagnosticHTMLSnapshot() async throws -> HistoryHTMLPreviewView.DiagnosticSnapshot? {
+    try await preview?.diagnosticHTMLSnapshot()
+  }
   private var summary: String {
     if let files = EventClassifier.parseFileDisplay(item.display), let first = files.items.first {
       let suffix =
@@ -396,6 +416,9 @@ final class HistoryCardView: NSView {
     refresh()
   }
   func refresh() {
+    // A history refresh may restore the decoded cache state; the failed WebKit
+    // instance remains unavailable until Retry explicitly discards it.
+    if detailState == 3, preview?.hasFailed == true { detailState = 2 }
     for badge in badges { badge.removeFromSuperview() }
     badges = []
     let type =
@@ -415,19 +438,26 @@ final class HistoryCardView: NSView {
     searchMatch.isHidden = !showMatch
     searchIcon.isHidden = !showMatch
     searchMatch.setAccessibilityLabel(t("searchMatch") + ": " + searchMatch.stringValue)
-    status.isHidden = !(expanded && [1, 2].contains(detailState))
-    status.stringValue = t(detailState == 1 ? "loadingDetail" : "detailUnavailable")
-    retryButton.isHidden = !(expanded && detailState == 2)
     if expanded, detailState == 3, let detail {
       if preview == nil || previewIsSummary {
         preview?.removeFromSuperview()
         let child = HistoryInlinePreviewView(detail: detail, language: language)
-        child.onHeightChanged = { [weak self] in self?.onHeightChanged?() }
+        child.onHeightChanged = { [weak self] in
+          guard let self else { return }
+          refresh()
+          onHeightChanged?()
+        }
+        child.onFailure = { [weak self, weak child] in
+          guard let self, let child, preview === child else { return }
+          detailState = 2
+          refresh()
+          onHeightChanged?()
+        }
         preview = child
         previewIsSummary = false
         addSubview(child)
       }
-      preview?.isHidden = false
+      preview?.isHidden = preview?.isReady == false
       previewLabel.isHidden = true
     } else if expanded, detailState == 0,
       let files = EventClassifier.parseFileDisplay(item.display)?.items, !files.isEmpty
@@ -447,8 +477,11 @@ final class HistoryCardView: NSView {
       previewLabel.isHidden = true
     } else {
       preview?.isHidden = true
-      previewLabel.isHidden = expanded && [1, 2].contains(detailState)
+      previewLabel.isHidden = showsStatus
     }
+    status.isHidden = !showsStatus
+    status.stringValue = t(showsLoading ? "loadingDetail" : "detailUnavailable")
+    retryButton.isHidden = !(expanded && detailState == 2)
     pinButton.isEnabled = !pinning && !deleting
     pinButton.state = item.isPinned ? .on : .off
     deleteButton.isEnabled = !pinning && !deleting
@@ -499,10 +532,10 @@ final class HistoryCardView: NSView {
       x += badge.desiredWidth + 5
     }
     let contentHeight: CGFloat
-    if expanded && previewLabel.isHidden, ![1, 2].contains(detailState), let preview {
+    if expanded && previewLabel.isHidden, !showsStatus, let preview {
       contentHeight = preview.desiredHeight(width: contentWidth)
-    } else if expanded && [1, 2].contains(detailState) {
-      contentHeight = detailState == 1 ? 20 : 32
+    } else if showsStatus {
+      contentHeight = showsLoading ? 20 : 32
     } else {
       contentHeight = HistoryVisual.textHeight(
         previewLabel.stringValue, width: contentWidth - (typeIcon.isHidden ? 0 : 25),
@@ -514,7 +547,7 @@ final class HistoryCardView: NSView {
       : HistoryVisual.textHeight(
         searchMatch.stringValue, width: contentWidth - 38, font: searchMatch.font!,
         lineHeight: 19.02) + 21
-    let margin: CGFloat = previewLabel.isHidden && ![1, 2].contains(detailState) ? 0 : 4
+    let margin: CGFloat = previewLabel.isHidden && !showsStatus ? 0 : 4
     return 26 + metaHeight + 6 + contentHeight + margin + matchHeight + 15.232
   }
   override func layout() {
@@ -532,15 +565,15 @@ final class HistoryCardView: NSView {
       x += badge.desiredWidth + 5
     }
     y += 23.408
-    if expanded, previewLabel.isHidden, ![1, 2].contains(detailState), let preview {
+    if expanded, previewLabel.isHidden, !showsStatus, let preview {
       let h = preview.desiredHeight(width: width)
       preview.frame = NSRect(x: left, y: y, width: width, height: h)
       preview.layoutSubtreeIfNeeded()
       y += h
-    } else if expanded && [1, 2].contains(detailState) {
+    } else if showsStatus {
       status.frame = NSRect(x: left, y: y + 2, width: width - 85, height: 24)
       retryButton.frame = NSRect(x: left + width - 75, y: y, width: 75, height: 30)
-      y += detailState == 1 ? 20 : 32
+      y += showsLoading ? 20 : 32
     } else {
       let offset: CGFloat = typeIcon.isHidden ? 0 : 25
       let h = HistoryVisual.textHeight(
@@ -550,7 +583,7 @@ final class HistoryCardView: NSView {
       previewLabel.frame = NSRect(x: left + offset, y: y, width: width - offset, height: h)
       y += h
     }
-    y += previewLabel.isHidden && ![1, 2].contains(detailState) ? 0 : 4
+    y += previewLabel.isHidden && !showsStatus ? 0 : 4
     if !searchMatch.isHidden {
       let h = HistoryVisual.textHeight(
         searchMatch.stringValue, width: width - 38, font: searchMatch.font!, lineHeight: 19.02)

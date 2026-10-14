@@ -5,11 +5,14 @@ import ImageIO
 @MainActor
 final class HistoryInlinePreviewView: NSView {
   var onHeightChanged: (() -> Void)?
+  var onFailure: (() -> Void)?
   private let detail: InlineHistoryDetail
   private let language: String
   private var children: [NSView] = []
   private var htmlView: HistoryHTMLPreviewView?
   private var textViewport: NSScrollView?
+  var isReady: Bool { htmlView?.isReady ?? true }
+  var hasFailed: Bool { htmlView?.hasFailed ?? false }
   override var isFlipped: Bool { true }
   init(detail: InlineHistoryDetail, language: String) {
     self.detail = detail
@@ -19,6 +22,7 @@ final class HistoryInlinePreviewView: NSView {
       let preview = HistoryHTMLPreviewView(
         html: html, title: L10n.string("formattedPreviewTitle", language: language))
       preview.onHeightChanged = { [weak self] in self?.onHeightChanged?() }
+      preview.onFailure = { [weak self] in self?.onFailure?() }
       htmlView = preview
       children = [preview]
     } else if let text = detail.textFallback {
@@ -111,6 +115,20 @@ final class HistoryInlinePreviewView: NSView {
     for child in children { addSubview(child) }
   }
   required init?(coder: NSCoder) { nil }
+  func diagnosticHTMLSnapshot() async throws -> HistoryHTMLPreviewView.DiagnosticSnapshot? {
+    try await htmlView?.diagnosticSnapshot()
+  }
+  func diagnosticSimulateHTMLProcessTermination() { htmlView?.diagnosticSimulateProcessTermination() }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    for child in children {
+      child.layer?.borderColor = HistoryVisual.separator(child).cgColor
+      if let label = child as? HistoryLabel { label.textColor = HistoryVisual.text(child) }
+      if child is NSImageView {
+        child.layer?.backgroundColor = HistoryVisual.controlFill(child).cgColor
+      }
+    }
+  }
   func desiredHeight(width: CGFloat) -> CGFloat {
     if let htmlView { return htmlView.previewHeight + 8 }
     if textViewport != nil { return 288 }
@@ -170,6 +188,11 @@ private final class HistoryImagePlaceholderView: NSView {
     setAccessibilityElement(false)
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    layer?.borderColor = HistoryVisual.separator(self).cgColor
+    layer?.backgroundColor = HistoryVisual.controlFill(self).cgColor
+  }
 }
 
 @MainActor
@@ -193,6 +216,12 @@ private final class HistoryFilePreviewView: NSView {
     icon.contentTintColor = HistoryVisual.secondary(self)
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    name.textColor = HistoryVisual.text(self)
+    path.textColor = HistoryVisual.secondary(self)
+    icon.contentTintColor = HistoryVisual.secondary(self)
+  }
   func desiredHeight(width: CGFloat) -> CGFloat {
     HistoryVisual.textHeight(
       name.stringValue, width: width - 25, font: name.font!, lineHeight: 20.16)
@@ -233,6 +262,12 @@ private final class HistoryVideoPreviewView: NSView {
     icon.contentTintColor = .white
   }
   required init?(coder: NSCoder) { nil }
+  override func viewDidChangeEffectiveAppearance() {
+    super.viewDidChangeEffectiveAppearance()
+    layer?.borderColor = HistoryVisual.separator(self).cgColor
+    layer?.backgroundColor = HistoryVisual.controlFill(self).cgColor
+    label.textColor = HistoryVisual.text(self)
+  }
   override func layout() {
     super.layout()
     icon.frame = NSRect(x: 22, y: 22, width: 22, height: 22)

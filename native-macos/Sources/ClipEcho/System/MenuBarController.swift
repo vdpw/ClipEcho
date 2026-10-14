@@ -219,7 +219,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
       size: layout.size)
     panel.setFrame(frame, display: true)
     previewTextView?.frame.size = layout.size
-    previewTextView?.string = layout.text
+    previewTextView?.textStorage?.setAttributedString(
+      NSAttributedString(string: layout.text, attributes: TrayPresentation.previewAttributes))
     panel.orderFrontRegardless()
   }
 
@@ -253,8 +254,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     text.importsGraphics = false
     text.drawsBackground = false
     text.textColor = .labelColor
-    text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-    text.textContainerInset = NSSize(width: 8, height: 6)
+    text.font = TrayPresentation.previewFont
+    text.textContainerInset = TrayPresentation.previewInsets
     text.isVerticallyResizable = false
     text.isHorizontallyResizable = false
     text.isContinuousSpellCheckingEnabled = false
