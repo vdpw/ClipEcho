@@ -98,7 +98,9 @@ enum NativeSelfTest {
       pasteboard: pasteboard, autosaveWindowFrame: false)
     report("Native self-test capture passed")
     controller.start(hidden: true)
-    try require(app.activationPolicy() == .accessory)
+    try require(app.activationPolicy() == .accessory && controller.menuBar.isVisible)
+    let productionDelegate = AppDelegate(options: try LaunchOptions(arguments: []))
+    try require(!productionDelegate.applicationShouldTerminateAfterLastWindowClosed(app))
     controller.showHistory()
     try require(controller.window?.isVisible == true && app.activationPolicy() == .regular)
     let historySize = controller.window?.contentView?.bounds.size
@@ -118,9 +120,17 @@ enum NativeSelfTest {
     try require(window.contentViewController is HistoryViewController)
     try require((window.firstResponder as? NSTextView)?.isFieldEditor == true)
     controller.showSettings()
-    try require(!controller.windowShouldClose(window))
+    window.performClose(nil)
     try require(!window.isVisible && app.activationPolicy() == .accessory)
-    controller.showHistory()
+    try require(controller.menuBar.isVisible)
+    let statusMenu = controller.menuBar.menuForQA
+    let historyTitle = TrayPresentation.string("history", language: controller.settings.language)
+    let historyIndex = statusMenu.indexOfItem(withTitle: historyTitle)
+    try require(historyIndex >= 0)
+    controller.menuBar.menuWillOpen(statusMenu)
+    statusMenu.performActionForItem(at: historyIndex)
+    controller.menuBar.menuDidClose(statusMenu)
+    try require(controller.window === window && controller.menuBar.isVisible)
     try require(window.isVisible && app.activationPolicy() == .regular)
     try require(window.contentView?.bounds.size == historySize)
 
@@ -235,6 +245,50 @@ enum NativeSelfTest {
     try require(await writable.updateSettingAsync("language", value: "zh-CN"))
     try require(writable.settings.language == "zh-CN")
     report("Native self-test coordinator passed")
+
+    // Exercise the real close delegate and capture timer with the icon disabled
+    // in settings. Only the fixture database and named pasteboard are used.
+    writable.showHistory()
+    guard let backgroundWindow = writable.window else { throw Failure.assertion(#line) }
+    try require(await writable.updateSettingAsync("show_in_menu_bar", value: "false"))
+    try require(!writable.menuBar.isVisible)
+    backgroundWindow.performClose(nil)
+    try require(!backgroundWindow.isVisible && app.activationPolicy() == .accessory)
+    try require(!writable.menuBar.isVisible)
+    let backgroundText = "Synthetic capture after closing main window"
+    pasteboard.clearContents()
+    pasteboard.setString(backgroundText, forType: .string)
+    let captureDeadline = ProcessInfo.processInfo.systemUptime + 3
+    while (try await writableHistory.page(query: backgroundText)).items.isEmpty,
+      ProcessInfo.processInfo.systemUptime < captureDeadline
+    {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let backgroundItems = try await writableHistory.page(query: backgroundText)
+    try require(backgroundItems.items.count == 1 && backgroundItems.items[0].displayText == backgroundText)
+    // Allow the capture-triggered menu refresh to run while the window is hidden.
+    try await Task.sleep(for: .milliseconds(350))
+    try require(!backgroundWindow.isVisible && !writable.menuBar.isVisible)
+    try require((try await writableHistory.page(query: backgroundText)).items.count == 1)
+    // Finder relaunch and second-instance activation use this same entry point.
+    writable.activateWindow()
+    try require(writable.window === backgroundWindow && backgroundWindow.isVisible)
+    try require(app.activationPolicy() == .regular && !writable.menuBar.isVisible)
+    let persistedSettings = try await writableHistory.settings()
+    try require(!writable.settings.showInMenuBar && !persistedSettings.showInMenuBar)
+    backgroundWindow.orderOut(nil)
+    let hiddenLaunch = AppController(
+      history: writableHistory, snapshot: try await writableHistory.snapshot(), readOnly: true,
+      pasteboard: pasteboard, autosaveWindowFrame: false)
+    hiddenLaunch.start(hidden: true)
+    try require(hiddenLaunch.window?.isVisible == false && app.activationPolicy() == .accessory)
+    try require(!hiddenLaunch.menuBar.isVisible && !hiddenLaunch.settings.showInMenuBar)
+    hiddenLaunch.stop()
+    hiddenLaunch.window?.orderOut(nil)
+    writable.showHistory()
+    try require(await writable.updateSettingAsync("show_in_menu_bar", value: "true"))
+    report("Native self-test background lifecycle passed: close, Dock policy, menu preference, reopen and capture")
+
     try require(await writable.updateSettingAsync("theme", value: "light"))
     writable.showSettings()
     guard let settingsView = writable.window?.contentViewController as? SettingsViewController,
