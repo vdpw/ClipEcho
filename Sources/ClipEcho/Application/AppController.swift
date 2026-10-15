@@ -13,7 +13,7 @@ final class AppController: NSObject, NSWindowDelegate {
   private var historyView: HistoryViewController!
   private var settingsView: SettingsViewController!
   private var clipboard: ClipboardMonitor!
-  private var menuBar: MenuBarController!
+  private(set) var menuBar: MenuBarController!
   private var settingsVisible = false
   private var refreshTask: Task<Void, Never>?
   let mirror: HistoryMirror?
@@ -64,7 +64,7 @@ final class AppController: NSObject, NSWindowDelegate {
         }
       }, onError: { [weak self] error in self?.presentBackgroundError(error) })
     if !readOnly { clipboard.start() }
-    if hidden { NSApp.setActivationPolicy(.accessory) } else { showHistory() }
+    if hidden { hideMainWindow() } else { showHistory() }
   }
 
   private func buildWindow() {
@@ -156,9 +156,15 @@ final class AppController: NSObject, NSWindowDelegate {
   }
 
   func windowShouldClose(_ sender: NSWindow) -> Bool {
-    sender.orderOut(nil)
-    NSApp.setActivationPolicy(.accessory)
+    guard sender === window else { return true }
+    hideMainWindow()
     return false
+  }
+
+  private func hideMainWindow() {
+    // Closing only hides the window. Capture and the menu-bar preference remain active.
+    window?.orderOut(nil)
+    NSApp.setActivationPolicy(.accessory)
   }
 
   func stop() {

@@ -30,6 +30,10 @@ bundle identifier `com.copy-stack.desktop.native`；关闭窗口会隐藏 Dock �
 采集及菜单栏继续运行，重新打开应用会激活同一个窗口。`Command+,` 打开设置，
 `Command+F` 搜索，`Command+Q` 退出。
 
+关闭主窗口只隐藏窗口，应用继续后台采集；菜单栏图标遵循“在菜单栏中显示”设置。
+关闭该设置后，关闭窗口也不会退出应用或重新显示菜单栏图标，可再次打开应用以
+显示原窗口。选择“退出”或按 `Command+Q` 才会结束应用。
+
 ## 现有数据兼容
 
 默认直接打开 `$HOME/.clipecho/clipecho.db`，不另建一份历史数据。原生版本也识别

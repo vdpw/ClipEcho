@@ -16,6 +16,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   private var hoverRequest: UUID?
   private var highlightedHash: String?
   private var snapshot: [HistoryItem] = []
+  var isVisible: Bool { status?.isVisible == true }
   // Production runtime diagnostics do not change the original menu layout.
   var captureFailed = false
 
